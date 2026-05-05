@@ -29,7 +29,7 @@ From: continuumio/miniconda3
 %labels
     Author      "ANCPLab Oldenburg – University of Oldenburg"
     Tool        "MEGqc"
-    Version     "0.7.8"
+    Version     "latest"
     Maintainer  "karel.mauricio.lopez.vilaret@uni-oldenburg.de"
     Description "MEGqc containerized for HPC / CBRAIN via Apptainer/Singularity"
     Reference   "https://github.com/ANCPLabOldenburg/MEGqc"
@@ -70,7 +70,7 @@ From: continuumio/miniconda3
 
     # ── 3. Install MEGqc from PyPI ───────────────────────────────────────────
     pip install --upgrade pip
-    pip install "meg_qc==0.7.8"
+    pip install "meg_qc"
 
     # ── 4. Smoke-test all CLI entry points (build fails here if broken) ──────
     run-megqc --help          > /dev/null
@@ -109,7 +109,7 @@ From: continuumio/miniconda3
     exec run-megqc "$@"
 
 %help
-    MEGqc 0.7.8 — HPC / CBRAIN container (Apptainer / Singularity)
+    MEGqc (latest) — HPC / CBRAIN container (Apptainer / Singularity)
     ================================================================
     Developed in collaboration with the Montreal Neurological Institute (MNI) /
     McGill University for deployment on CBRAIN (https://cbrain.ca/) and any

@@ -440,7 +440,7 @@ and cohort size. A practical guide:
 
 ---
 
-*Built and tested on Ubuntu 22.04 LTS · Apptainer 1.4.5 · meg_qc 0.7.8*
+*Built and tested on Ubuntu 22.04 LTS · Apptainer 1.4.5 · meg_qc (latest)*
 *Maintainer: karel.mauricio.lopez.vilaret@uni-oldenburg.de*
 *Original CBRAIN integration: Alexandre Pastor-Bernier, MNI/McGill, March 2026*
 

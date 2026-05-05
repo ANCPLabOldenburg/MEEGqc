@@ -93,7 +93,7 @@ apptainer build MEGqc.sif MEGQC.def
 | Bootstrap | Pulls `continuumio/miniconda3` (Debian amd64) from Docker Hub |
 | Python | Installs Python 3.10 via conda |
 | OS libs | Installs all required shared libraries (OpenGL, Qt6/XCB, EGL, D-Bus ...) |
-| meg_qc | `pip install "meg_qc==0.7.8"` |
+| meg_qc | `pip install "meg_qc"` — always installs the **latest** release from PyPI |
 | Smoke tests | Runs all 4 CLI entry points with `--help` — build fails fast if broken |
 | Environment | Sets `QT_QPA_PLATFORM=offscreen` + `MPLBACKEND=Agg` (headless HPC default) |
 | Runscript | `apptainer run MEGqc.sif ...` maps directly to `run-megqc ...` |
@@ -119,7 +119,7 @@ Final image size: ~1 GB.
 ## 4. Verify the image
 
 ```bash
-# Check version label
+# Check version label (should print "latest")
 apptainer inspect MEGqc.sif | grep Version
 
 # Quick CLI smoke tests
@@ -185,7 +185,7 @@ scp MEGqc.sif user@hpc-server:/scratch/user/containers/
 ### Push to Sylabs Cloud Library
 
 ```bash
-apptainer push MEGqc.sif library://your_sylabs_user/default/meg_qc:0.7.8
+apptainer push MEGqc.sif library://your_sylabs_user/default/meg_qc:latest
 ```
 
 ### Push to GitHub Container Registry (GHCR)
@@ -193,7 +193,7 @@ apptainer push MEGqc.sif library://your_sylabs_user/default/meg_qc:0.7.8
 ```bash
 echo "$GITHUB_TOKEN" | apptainer remote login --username your_gh_user \
   --password-stdin oras://ghcr.io
-apptainer push MEGqc.sif oras://ghcr.io/your_gh_user/meg_qc:0.7.8
+apptainer push MEGqc.sif oras://ghcr.io/your_gh_user/meg_qc:latest
 ```
 
 ---
@@ -215,19 +215,22 @@ apptainer shell --fakeroot --writable MEGqc_sandbox/
 apptainer build MEGqc_fixed.sif MEGqc_sandbox/
 ```
 
-### Change the meg_qc version
+### Pin to a specific meg_qc version
 
-Edit two lines in `MEGQC.def`:
+By default `MEGQC.def` installs the **latest** release from PyPI at build time
+(`pip install "meg_qc"`). To pin to a specific version, edit one line in
+`MEGQC.def` before building:
 
 ```
-%labels
-    Version     "0.7.9"          <- update version label
-
 %post
-    pip install "meg_qc==0.7.9"  <- update pip install
+    pip install "meg_qc==0.9.8"   # replace 0.9.8 with the desired version
 ```
 
-Then rebuild.
+Also update the `Version` label in `%labels` to match, then rebuild:
+
+```bash
+apptainer build --force MEGqc.sif MEGQC.def
+```
 
 ---
 
@@ -264,7 +267,7 @@ for the full path conventions and output structure.
 
 ---
 
-*Built and tested on Ubuntu 22.04 LTS · Apptainer 1.4.5 · meg_qc 0.7.8*
+*Built and tested on Ubuntu 22.04 LTS · Apptainer 1.4.5 · meg_qc (latest)*
 *Maintainer: karel.mauricio.lopez.vilaret@uni-oldenburg.de*
 *Original CBRAIN integration: Alexandre Pastor-Bernier, MNI/McGill, March 2026*
 

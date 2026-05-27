@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+title: "MEEGqc: automated quality assessment and quality control for MEG and EEG data"
+message: "If you use MEEGqc in published work, please cite the software using these metadata."
+type: software
+version: "1.0.5"
+date-released: "2026-05-27"
+license: MIT
+url: "https://github.com/ANCPLabOldenburg/MEEGqc"
+repository-code: "https://github.com/ANCPLabOldenburg/MEEGqc"
+abstract: >-
+  MEEGqc is an open-source, BIDS-aligned Python toolbox for reproducible
+  quality assessment (QA) and quality control (QC) of MEG and EEG data.
+  It generates machine-readable BIDS derivatives and interactive HTML
+  reports across subject-level, dataset-level, and multi-dataset-level
+  scopes, supporting both detailed inspection and large-scale dataset
+  quality screening.
+keywords:
+  - MEG
+  - EEG
+  - BIDS
+  - quality assessment
+  - quality control
+  - GQI
+  - MNE-Python
+  - neuroimaging
+authors:
+  - family-names: Lopez Vilaret
+    given-names: Karel
+    affiliation: "ANCP Lab, University of Oldenburg"
+    email: "karel.mauricio.lopez.vilaret@uni-oldenburg.de"
+  - family-names: Gapontseva
+    given-names: Evgeniia
+    affiliation: "ANCP Lab, University of Oldenburg"
+  - family-names: Reer
+    given-names: Aaron
+    affiliation: "ANCP Lab, University of Oldenburg"
+  - family-names: Bosch
+    given-names: Jorge
+    affiliation: "ANCP Lab, University of Oldenburg"
+  - family-names: Karaca
+    given-names: Erdal
+    affiliation: "ANCP Lab, University of Oldenburg"

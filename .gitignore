@@ -10,6 +10,8 @@
 # Brand and app-icon assets are source files that ship with the wheel.
 !meg_qc/miscellaneous/GUI/logo.png
 !meg_qc/miscellaneous/GUI/assets/**/*.png
+# README media (referenced by relative path from README.md; keep self-contained)
+!docs/media/**/*.png
 *.bkp
 *.dtmp
 .DS_Store

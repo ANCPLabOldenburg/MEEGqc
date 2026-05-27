@@ -30,12 +30,12 @@ class QCViewerWindow(QMainWindow):
     """
     Dedicated MEG raw-data and QA/QC report viewer window.
 
-    Can be launched standalone or from the MEGqc GUI.
+    Can be launched standalone or from the MEEGqc GUI.
     """
 
     def __init__(self, parent=None, initial_dir: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("MEGqc – QC Viewer")
+        self.setWindowTitle("MEEGqc – QC Viewer")
         self.resize(1400, 900)
         self.setMinimumSize(800, 500)
 
@@ -92,7 +92,7 @@ class QCViewerWindow(QMainWindow):
         # Tools menu
         tools_menu = menu.addMenu("&Tools")
 
-        act_load_annot = QAction("Load MEGqc Annotations…", self)
+        act_load_annot = QAction("Load MEEGqc Annotations…", self)
         act_load_annot.triggered.connect(
             lambda: self._content_panel.get_timeseries_widget()._load_annotations_dialog()
         )
@@ -199,8 +199,8 @@ class QCViewerWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(
             self, "About QC Viewer",
-            "<h3>MEGqc QC Viewer</h3>"
-            "<p>A dedicated visualiser for MEG raw data, HTML reports, and MEGqc QA/QC annotations.</p>"
+            "<h3>MEEGqc QC Viewer</h3>"
+            "<p>A dedicated visualiser for MEG raw data, HTML reports, and MEEGqc QA/QC annotations.</p>"
             "<p><b>Features:</b></p>"
             "<ul>"
             "<li>File explorer with BIDS-aware filtering</li>"
@@ -210,13 +210,13 @@ class QCViewerWindow(QMainWindow):
             "<li>Auto-detect available channel types (CTF .ds support)</li>"
             "<li>Individual channel selection within types</li>"
             "<li>Signal processing: filtering, resampling, PSD, topomaps</li>"
-            "<li>MEGqc annotation overlays: STD, PTP, PSD, ECG, EOG, Muscle</li>"
+            "<li>MEEGqc annotation overlays: STD, PTP, PSD, ECG, EOG, Muscle</li>"
             "<li>Epoch-level noisy/flat annotation matrices</li>"
             "<li>BIDS events.tsv overlay from EventSummary JSON</li>"
             "<li>Configurable event line thickness and color</li>"
             "<li>Background-threaded loading for all heavy operations</li>"
             "</ul>"
-            "<p>Part of the MEGqc pipeline.</p>"
+            "<p>Part of the MEEGqc pipeline.</p>"
         )
 
     def _show_shortcuts(self):

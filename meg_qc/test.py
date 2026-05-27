@@ -1,9 +1,38 @@
 import argparse
 import os
 import shutil
+import sys
 import time
 import datetime as dt
 from typing import Callable, Dict, List, Optional, Sequence, Union
+
+
+def _invocation_name(fallback: str) -> str:
+    """Return the command name the user actually typed.
+
+    The console scripts ``run-megqc`` and ``run-meegqc`` (and the other
+    pairs) dispatch to the same Python function. The argparse description
+    + examples should reflect whichever name the user invoked, so
+    ``--help`` is internally consistent. Falls back to *fallback* when
+    ``sys.argv[0]`` is empty (e.g. inside a test harness).
+    """
+    if not sys.argv or not sys.argv[0]:
+        return fallback
+    name = os.path.basename(sys.argv[0])
+    if name.lower().endswith(".exe"):
+        name = name[:-4]
+    return name or fallback
+
+
+def _plotting_invocation(calc_name: str) -> str:
+    """Map ``run-megqc`` -> ``run-megqc-plotting`` (or meeg variant).
+
+    Used inside ``run_megqc()``'s ``--run-all`` help text so it points at
+    the alias family the user is already using.
+    """
+    if calc_name.endswith("-plotting"):
+        return calc_name
+    return f"{calc_name}-plotting"
 
 
 def hello_world():
@@ -497,17 +526,22 @@ def run_plotting_dispatch(
 
 def run_megqc():
     """
-    Main entry point for launching the MEG QC calculation pipeline from CLI.
+    Main entry point for launching the MEEGqc calculation pipeline from CLI.
     Supports one or multiple datasets via --inputdata.
+
+    Reachable as either ``run-megqc`` or ``run-meegqc``; both dispatch
+    here. ``--help`` adapts its prose to the invocation name.
     """
+    cmd = _invocation_name("run-megqc")
+    plot_cmd = _plotting_invocation(cmd)
     dataset_path_parser = argparse.ArgumentParser(
         description=(
-            "Command-line argument parser for MEGqc calculation.\n"
-            "--inputdata (required): one or more BIDS dataset paths.\n"
-            "--config (optional): path to a config file.\n"
-            "--subs (optional): list of subject IDs (defaults to all).\n"
-            "--n_jobs (optional): subject-level parallel workers.\n"
-            "--derivatives_output (optional): external derivatives parent folder."
+            f"Command-line argument parser for MEEGqc calculation.\n"
+            f"--inputdata (required): one or more BIDS dataset paths.\n"
+            f"--config (optional): path to a config file.\n"
+            f"--subs (optional): list of subject IDs (defaults to all).\n"
+            f"--n_jobs (optional): subject-level parallel workers.\n"
+            f"--derivatives_output (optional): external derivatives parent folder."
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -645,8 +679,8 @@ def run_megqc():
         action="store_true",
         dest="run_all_reports",
         help=(
-            "After calculation finishes, run all QA and QC plotting modes in one shot "
-            "(equivalent to run-megqc-plotting --all)."
+            f"After calculation finishes, run all QA and QC plotting modes in one shot "
+            f"(equivalent to {plot_cmd} --all)."
         ),
     )
     # Backward-compatible alias retained for existing scripts.
@@ -673,7 +707,7 @@ def run_megqc():
     install_dir = _megqc_installation_dir()
     cfg_paths = _default_config_paths(install_dir)
 
-    print("MEG QC installation directory:", install_dir)
+    print("MEEGqc installation directory:", install_dir)
     print("Datasets to process:", args.inputdata)
 
     sub_list = _resolve_sub_list(args.subs)
@@ -714,7 +748,7 @@ def run_megqc():
             args.qc_all,
             args.all,
         ])
-        print(f"Running MEG QC calculation + plotting with n_jobs={args.n_jobs}")
+        print(f"Running MEEGqc calculation + plotting with n_jobs={args.n_jobs}")
         run_all_dispatch(
             dataset_paths=args.inputdata,
             config_file_path=config_file_path,
@@ -744,7 +778,7 @@ def run_megqc():
         )
         return
 
-    print(f"Running MEG QC calculation with n_jobs={args.n_jobs}")
+    print(f"Running MEEGqc calculation with n_jobs={args.n_jobs}")
     run_calculation_dispatch(
         dataset_paths=args.inputdata,
         config_file_path=config_file_path,
@@ -771,17 +805,20 @@ def run_megqc():
 def get_config():
     """
     Copies the default config file (settings.ini) to the user-specified target directory.
-    Allows the user to customize the config before running MEG QC.
+    Allows the user to customize the config before running MEEGqc.
+
+    Reachable as either ``get-megqc-config`` or ``get-meegqc-config``;
+    both dispatch here.
     """
     target_directory_parser = argparse.ArgumentParser(
-        description="parser for MEGqc get_config: "
+        description="parser for MEEGqc get_config: "
                     "--target_directory (mandatory) path/to/directory to store the config"
     )
     target_directory_parser.add_argument(
         "--target_directory",
         type=str,
         required=True,
-        help="Path to which the default MEG QC config file (settings.ini) will be copied."
+        help="Path to which the default MEEGqc config file (settings.ini) will be copied."
     )
     target_directory_parser.add_argument(
         "--filename",
@@ -795,7 +832,7 @@ def get_config():
     print("Destination directory for config:", destination_directory)
 
     path_to_megqc_installation = _megqc_installation_dir()
-    print("MEG QC installation directory:", path_to_megqc_installation)
+    print("MEEGqc installation directory:", path_to_megqc_installation)
 
     config_file_path = os.path.join(path_to_megqc_installation, "settings", "settings.ini")
     print("Source of default config file:", config_file_path)
@@ -812,24 +849,25 @@ def get_plots():
     It can run subject-level, group-level, and multi-sample reports depending
     on provided flags and number of datasets.
     """
+    cmd = _invocation_name("run-megqc-plotting")
     dataset_path_parser = argparse.ArgumentParser(
         description=(
-            "MEGqc plotting dispatcher for QA/QC reports.\n\n"
-            "Use explicit flags to choose report scope:\n"
-            "  QA flags: --qa-subject, --qa-group, --qa-multisample, --qa-all\n"
-            "  QC flags: --qc-group, --qc-multisample, --qc-all\n"
-            "  Combined: --all (runs QA+QC in one shot)\n\n"
-            "Examples:\n"
-            "  Subject QA (single dataset):\n"
-            "    run-megqc-plotting --inputdata /path/ds --qa-subject\n\n"
-            "  Group QA (single dataset):\n"
-            "    run-megqc-plotting --inputdata /path/ds --qa-group\n\n"
-            "  Multi-sample QA (2+ datasets):\n"
-            "    run-megqc-plotting --inputdata /path/ds1 /path/ds2 --qa-multisample\n\n"
-            "  Group QC with selected attempt:\n"
-            "    run-megqc-plotting --inputdata /path/ds --qc-group --attempt 2\n\n"
-            "  All QA+QC reports (one shot):\n"
-            "    run-megqc-plotting --inputdata /path/ds1 /path/ds2 --all"
+            f"MEEGqc plotting dispatcher for QA/QC reports.\n\n"
+            f"Use explicit flags to choose report scope:\n"
+            f"  QA flags: --qa-subject, --qa-group, --qa-multisample, --qa-all\n"
+            f"  QC flags: --qc-group, --qc-multisample, --qc-all\n"
+            f"  Combined: --all (runs QA+QC in one shot)\n\n"
+            f"Examples:\n"
+            f"  Subject QA (single dataset):\n"
+            f"    {cmd} --inputdata /path/ds --qa-subject\n\n"
+            f"  Group QA (single dataset):\n"
+            f"    {cmd} --inputdata /path/ds --qa-group\n\n"
+            f"  Multi-sample QA (2+ datasets):\n"
+            f"    {cmd} --inputdata /path/ds1 /path/ds2 --qa-multisample\n\n"
+            f"  Group QC with selected attempt:\n"
+            f"    {cmd} --inputdata /path/ds --qc-group --attempt 2\n\n"
+            f"  All QA+QC reports (one shot):\n"
+            f"    {cmd} --inputdata /path/ds1 /path/ds2 --all"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )

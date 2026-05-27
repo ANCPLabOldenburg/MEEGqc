@@ -7,7 +7,7 @@ name = "meg_qc"
 description = "Tool for automated MEG and EEG data quality control"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
-version = "0.9.8"
+version = "1.0.5"
 license = "MIT"
 authors = [
     {name = "Karel Lopez Vilaret", email = "karel.mauricio.lopez.vilaret@uni-oldenburg.de"},
@@ -55,14 +55,20 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ANCPLabOldenburg/MEGqc"
+Homepage = "https://github.com/ANCPLabOldenburg/MEEGqc"
 
 [project.scripts]
+# Original meg-* CLIs (kept for backwards compatibility).
 megqc = "meg_qc.miscellaneous.GUI.megqcGUI:run_megqc_gui"
 run-megqc = "meg_qc.test:run_megqc"
 run-megqc-plotting = "meg_qc.test:get_plots"
 get-megqc-config = "meg_qc.test:get_config"
 globalqualityindex = "meg_qc.test:run_gqi"
+# MEEGqc rebrand aliases: same functions, brand-consistent names.
+meegqc = "meg_qc.miscellaneous.GUI.megqcGUI:run_megqc_gui"
+run-meegqc = "meg_qc.test:run_megqc"
+run-meegqc-plotting = "meg_qc.test:get_plots"
+get-meegqc-config = "meg_qc.test:get_config"
 
 [tool.setuptools]
 include-package-data = true

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeg_qc"
+description = "MEEGqc: meta-package that installs meg_qc (the MEG and EEG quality control tool, formerly MEGqc)."
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+version = "1.0.5"
+license = "MIT"
+authors = [
+    {name = "Karel Lopez Vilaret", email = "karel.mauricio.lopez.vilaret@uni-oldenburg.de"},
+    {name = "Karel Lopez Vilaret"},
+    {name = "Evgeniia Gapontseva"},
+    {name = "Aaron Reer"},
+    {name = "Jorge Bosch"},
+    {name = "Erdal Karaca"},
+]
+maintainers = [
+    {name = "ANCP Lab, University of Oldenburg", email = "karel.mauricio.lopez.vilaret@uni-oldenburg.de"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+
+# Exact pin: meeg_qc and meg_qc are released in lockstep.
+# Installing meeg-qc pulls in the matching meg-qc release, which is
+# where all code, CLI entry points, and package data actually live.
+dependencies = [
+    "meg_qc==1.0.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/ANCPLabOldenburg/MEEGqc"
+
+[tool.setuptools]
+# No Python code is shipped. This distribution is a pure alias /
+# meta-package: pip install meeg-qc -> resolves meg-qc -> done.
+packages = []

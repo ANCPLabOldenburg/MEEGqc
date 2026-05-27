@@ -1,5 +1,5 @@
 """
-output_monitoring – Live terminal streaming and CLI launcher for MEGqc GUI.
+output_monitoring – Live terminal streaming and CLI launcher for MEEGqc GUI.
 
 Public API
 ----------

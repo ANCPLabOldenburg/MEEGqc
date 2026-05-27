@@ -1,7 +1,7 @@
 """
-qc_viewer_annotation_manager.py – Parse MEGqc derivative files and provide annotation data.
+qc_viewer_annotation_manager.py – Parse MEEGqc derivative files and provide annotation data.
 
-Loads TSV / JSON derivative files produced by MEGqc and exposes a uniform
+Loads TSV / JSON derivative files produced by MEEGqc and exposes a uniform
 API for the time-series viewer to overlay coloured highlights.
 
 Integrated into meg_qc package as part of the QC Viewer module.
@@ -110,7 +110,7 @@ class AnnotationSet:
 # Loader                                                             #
 # ------------------------------------------------------------------ #
 class AnnotationManager:
-    """Load and manage MEGqc annotations for a given recording."""
+    """Load and manage MEEGqc annotations for a given recording."""
 
     def __init__(self):
         self.annotations: Optional[AnnotationSet] = None

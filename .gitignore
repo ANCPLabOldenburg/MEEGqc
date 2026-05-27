@@ -7,6 +7,9 @@
 .DS_Store?
 *.DS_Store
 *.png
+# Brand and app-icon assets are source files that ship with the wheel.
+!meg_qc/miscellaneous/GUI/logo.png
+!meg_qc/miscellaneous/GUI/assets/**/*.png
 *.bkp
 *.dtmp
 .DS_Store

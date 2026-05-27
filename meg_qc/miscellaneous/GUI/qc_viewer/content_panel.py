@@ -40,7 +40,7 @@ try:
     HAS_WEBENGINE = True
 except Exception as _webengine_exc:
     import sys as _sys
-    print(f"[MEGqc] WebEngine unavailable: {_webengine_exc}", file=_sys.stderr)
+    print(f"[MEEGqc] WebEngine unavailable: {_webengine_exc}", file=_sys.stderr)
     QWebEngineView = None  # type: ignore[assignment,misc]
     QWebEngineSettings = None  # type: ignore[assignment,misc]
     HAS_WEBENGINE = False
@@ -476,7 +476,7 @@ class ContentPanel(QWidget):
 
 
     def _try_auto_load_annotations(self):
-        """Try to find and auto-load MEGqc annotations for the current file."""
+        """Try to find and auto-load MEEGqc annotations for the current file."""
         if self._current_file is None:
             return
 

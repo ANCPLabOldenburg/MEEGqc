@@ -1,6 +1,6 @@
 """
 live_terminal.py – Floating, minimisable window that streams real-time
-stdout/stderr from MEGqc background worker processes.
+stdout/stderr from MEEGqc background worker processes.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ class LiveTerminalDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("MEGqc — Live Terminal Output")
+        self.setWindowTitle("MEEGqc — Live Terminal Output")
         self.resize(860, 540)
         self.setMinimumSize(480, 280)
 

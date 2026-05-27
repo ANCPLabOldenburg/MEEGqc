@@ -70,7 +70,7 @@ def _ensure_xcb_cursor() -> None:
         try:
             ctypes.CDLL(so_path, mode=ctypes.RTLD_GLOBAL)
             print(
-                f"[MEGqc] Preloaded {_XCB_SO_NAME} from {so_path}",
+                f"[MEEGqc] Preloaded {_XCB_SO_NAME} from {so_path}",
                 file=sys.stderr,
             )
             return
@@ -80,9 +80,9 @@ def _ensure_xcb_cursor() -> None:
 
     # 3. Not available anywhere — download into the venv.
     print(
-        f"[MEGqc] {_XCB_SO_NAME} is not installed on this system.\n"
-        f"[MEGqc] Qt 6.5+ requires it for the xcb (X11) platform plugin.\n"
-        f"[MEGqc] Attempting automatic download into the active .venv …",
+        f"[MEEGqc] {_XCB_SO_NAME} is not installed on this system.\n"
+        f"[MEEGqc] Qt 6.5+ requires it for the xcb (X11) platform plugin.\n"
+        f"[MEEGqc] Attempting automatic download into the active .venv …",
         file=sys.stderr,
     )
 
@@ -90,9 +90,9 @@ def _ensure_xcb_cursor() -> None:
         _fetch_xcb_cursor_lib(venv_lib_dir)
     except Exception as exc:
         print(
-            f"[MEGqc] Auto-fetch failed: {exc}\n"
-            "[MEGqc] Please install the library manually:\n"
-            "[MEGqc]   sudo apt install libxcb-cursor0",
+            f"[MEEGqc] Auto-fetch failed: {exc}\n"
+            "[MEEGqc] Please install the library manually:\n"
+            "[MEEGqc]   sudo apt install libxcb-cursor0",
             file=sys.stderr,
         )
         return
@@ -100,8 +100,8 @@ def _ensure_xcb_cursor() -> None:
         return
 
     print(
-        f"[MEGqc] Library cached at {so_path}\n"
-        f"[MEGqc] Restarting with LD_LIBRARY_PATH → {venv_lib_dir}",
+        f"[MEEGqc] Library cached at {so_path}\n"
+        f"[MEEGqc] Restarting with LD_LIBRARY_PATH → {venv_lib_dir}",
         file=sys.stderr,
     )
 
@@ -123,7 +123,7 @@ def _fetch_xcb_cursor_lib(dest_dir: str) -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         print(
-            "[MEGqc] Running: apt-get download libxcb-cursor0  (no root required)",
+            "[MEEGqc] Running: apt-get download libxcb-cursor0  (no root required)",
             file=sys.stderr,
         )
         subprocess.run(
@@ -138,13 +138,13 @@ def _fetch_xcb_cursor_lib(dest_dir: str) -> None:
 
         deb_path = os.path.join(tmp, debs[0])
         print(
-            f"[MEGqc] Downloaded {debs[0]}",
+            f"[MEEGqc] Downloaded {debs[0]}",
             file=sys.stderr,
         )
 
         extract_dir = os.path.join(tmp, "extracted")
         print(
-            f"[MEGqc] Extracting {_XCB_SO_NAME} into {dest_dir}",
+            f"[MEEGqc] Extracting {_XCB_SO_NAME} into {dest_dir}",
             file=sys.stderr,
         )
         subprocess.run(
@@ -212,7 +212,7 @@ try:
     HAS_WEBENGINE = True
 except Exception as _webengine_exc:
     import sys as _sys
-    print(f"[MEGqc] WebEngine unavailable: {_webengine_exc}", file=_sys.stderr)
+    print(f"[MEEGqc] WebEngine unavailable: {_webengine_exc}", file=_sys.stderr)
     QWebEngineView = None  # type: ignore[assignment,misc]
     HAS_WEBENGINE = False
 from urllib.request import Request, urlopen
@@ -261,6 +261,7 @@ from meg_qc.calculation.meg_qc_pipeline import list_analysis_profiles
 from meg_qc import __version__ as MEGQC_VERSION
 # Output monitoring: live terminal streaming + CLI launcher
 from .output_monitoring import LiveTerminalDialog, open_cli_terminal
+from .update_widgets import check_for_updates_interactive, run_startup_check
 # Use Qt built-in dialogs (consistent cross-platform behaviour)
 QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs)
 
@@ -526,10 +527,87 @@ def _runtime_config_dir() -> Path:
     """Return and create the writable folder used for runtime config copies."""
     base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation)
     if not base:
-        base = str(Path.home() / ".config" / "MEGqc")
+        base = str(Path.home() / ".config" / "MEEGqc")
     path = Path(base) / "runtime_configs"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# Keys each GUI QSettings store persists. Listed explicitly because
+# ``QSettings.allKeys()`` on macOS also returns inherited global system
+# preferences (``AppleLanguages``, ``NSAutomaticCapitalization...``,
+# etc.) which we must not touch.
+_QSETTINGS_KEYS_TO_MIGRATE: Tuple[str, ...] = (
+    "ui/theme",
+)
+_VIEWER_QSETTINGS_KEYS_TO_MIGRATE: Tuple[str, ...] = (
+    "viewer/dark_plot",
+)
+_MIGRATION_MARKER_KEY = "_migration/megqc_to_meegqc"
+
+
+def _migrate_legacy_megqc_state() -> None:
+    """One-shot migration of user state from the old "MEGqc" name.
+
+    Three stores carry user data under the old brand:
+
+    1. ``QSettings("ANCP", "MEGqc")`` (cross-platform: plist on macOS,
+       registry on Windows, INI on Linux) - holds the main GUI's theme
+       and other prefs.
+    2. ``QSettings("ANCP", "MEGqc_Viewer")`` - same backend, holds the
+       QC Viewer's prefs (currently just the dark-plot toggle).
+    3. ``~/.config/MEGqc/`` - the Linux fallback for the runtime config
+       dir, used only when ``QStandardPaths`` returns empty (no org /
+       application name registered on the QApplication).
+
+    Idempotency is enforced by a dedicated marker key in the new main
+    QSettings store: once the migration ran, subsequent launches see
+    the marker and skip both QSettings migrations. We do *not* rely on
+    ``allKeys()`` emptiness because on macOS that returns the user's
+    global system prefs too.
+
+    Failures are swallowed: a broken migration must not block GUI
+    startup. Worst case the user re-picks their theme.
+    """
+    # 1. QSettings migration ----------------------------------------------
+    try:
+        new = QSettings("ANCP", "MEEGqc")
+        if not bool(new.value(_MIGRATION_MARKER_KEY, False, type=bool)):
+            # 1a. Main GUI store.
+            old = QSettings("ANCP", "MEGqc")
+            for key in _QSETTINGS_KEYS_TO_MIGRATE:
+                value = old.value(key)
+                if value is not None:
+                    new.setValue(key, value)
+
+            # 1b. QC Viewer store (the viewer uses its own QSettings
+            #     org/app pair so its state survives reinstalls of the
+            #     main GUI).
+            new_viewer = QSettings("ANCP", "MEEGqc_Viewer")
+            old_viewer = QSettings("ANCP", "MEGqc_Viewer")
+            for key in _VIEWER_QSETTINGS_KEYS_TO_MIGRATE:
+                value = old_viewer.value(key)
+                if value is not None:
+                    new_viewer.setValue(key, value)
+            new_viewer.sync()
+
+            # Mark the migration as done unconditionally: even when the
+            # legacy stores had nothing to migrate (fresh install on the
+            # new brand), we never want to re-run this on every launch.
+            new.setValue(_MIGRATION_MARKER_KEY, True)
+            new.sync()
+    except Exception:
+        pass
+
+    # 2. Linux config dir migration: ~/.config/MEGqc -> ~/.config/MEEGqc
+    #    Only acts when the new dir doesn't already exist.
+    try:
+        legacy_dir = Path.home() / ".config" / "MEGqc"
+        new_dir = Path.home() / ".config" / "MEEGqc"
+        if legacy_dir.is_dir() and not new_dir.exists():
+            shutil.move(str(legacy_dir), str(new_dir))
+    except Exception:
+        pass
 
 
 class SettingsEditorDialog(QDialog):
@@ -1182,7 +1260,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("MEGqc")
+        self.setWindowTitle("MEEGqc")
         self.resize(700, 780)
         self.setWindowIcon(_build_app_icon())
 
@@ -1192,9 +1270,13 @@ class MainWindow(QMainWindow):
         self.global_config_path: Optional[str] = None
         self.dataset_config_paths: Dict[str, str] = {}
 
+        # One-shot migration of any state left behind under the old
+        # "MEGqc" name. Idempotent + fail-safe.
+        _migrate_legacy_megqc_state()
+
         # Persistent GUI preferences (theme etc.) are stored cross-platform
         # through QSettings backend (plist on macOS, registry on Windows, INI on Linux).
-        self.settings_store = QSettings("ANCP", "MEGqc")
+        self.settings_store = QSettings("ANCP", "MEEGqc")
 
         self.themes = self._build_theme_dict()
         self.cpu_count, self.total_ram_gb = self._detect_system_resources()
@@ -1240,6 +1322,12 @@ class MainWindow(QMainWindow):
         if saved_theme not in self.themes:
             saved_theme = "Ocean"
         self.apply_theme(saved_theme, persist=False)
+
+        # Background PyPI check ~2.5s after window paint. Silent on
+        # network failures, skipped for editable installs / pytest /
+        # MEGQC_NO_UPDATE_CHECK=1. Pops a non-blocking dialog only when
+        # a strictly newer stable release exists.
+        run_startup_check(self)
 
 
     # ──────────────────────────────── #
@@ -1611,275 +1699,6 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.apply_theme(dialog.theme_combo.currentText(), persist=True)
-
-    # ------------------------------------------------------------------
-    # PyPI helpers
-    # ------------------------------------------------------------------
-
-    def _fetch_pypi_payload(self) -> dict:
-        """Fetch the raw PyPI JSON payload for meg_qc (shared SSL retry logic).
-
-        SSL strategy:
-        1. certifi CA bundle when available.
-        2. System default CA context.
-        3. Unverified fallback (read-only check — does not install anything).
-        """
-        req = Request(
-            "https://pypi.org/pypi/meg_qc/json",
-            headers={"User-Agent": "MEGqc-GUI-update-check"},
-        )
-        contexts = []
-        try:
-            import certifi
-            contexts.append(ssl.create_default_context(cafile=certifi.where()))
-        except Exception:
-            pass
-        contexts.append(ssl.create_default_context())
-
-        last_exc: Optional[Exception] = None
-        for ctx in contexts:
-            try:
-                with urlopen(req, timeout=8, context=ctx) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except Exception as exc:
-                last_exc = exc
-
-        try:
-            insecure_ctx = ssl._create_unverified_context()
-            with urlopen(req, timeout=8, context=insecure_ctx) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            self._log("Update check used unverified SSL fallback (certificate validation unavailable).")
-            return payload
-        except Exception as exc:
-            raise (last_exc or exc)
-
-    def _fetch_latest_pypi_version(self, include_pre: bool = False) -> str:
-        """Return the latest meg_qc version from PyPI.
-
-        When *include_pre* is False (default) this returns ``info.version``
-        which PyPI always sets to the latest *stable* release.  When True, the
-        full ``releases`` dict is scanned so pre-releases are considered too.
-        """
-        payload = self._fetch_pypi_payload()
-        if not include_pre:
-            return str(payload.get("info", {}).get("version", "")).strip()
-        try:
-            from packaging.version import Version
-            versions = [Version(v) for v in payload.get("releases", {}).keys()]
-            return str(max(versions)) if versions else str(payload.get("info", {}).get("version", "")).strip()
-        except Exception:
-            return str(payload.get("info", {}).get("version", "")).strip()
-
-    def _fetch_all_pypi_versions(self, include_pre: bool = True) -> List[str]:
-        """Return every published meg_qc version, sorted newest → oldest.
-
-        Parameters
-        ----------
-        include_pre:
-            When False, alpha/beta/rc releases are omitted.
-        """
-        payload = self._fetch_pypi_payload()
-        raw = list(payload.get("releases", {}).keys())
-        try:
-            from packaging.version import Version
-            parsed = []
-            for v in raw:
-                try:
-                    parsed.append(Version(v))
-                except Exception:
-                    pass
-            if not include_pre:
-                parsed = [v for v in parsed if not v.is_prerelease]
-            parsed.sort(reverse=True)
-            return [str(v) for v in parsed]
-        except Exception:
-            # packaging unavailable — crude filter + sort
-            if not include_pre:
-                raw = [v for v in raw if not any(t in v for t in ("a", "b", "rc", "dev", "post"))]
-            return sorted(raw, reverse=True)
-
-    @staticmethod
-    def _is_newer_version(latest: str, current: str) -> bool:
-        """Return True when *latest* is strictly newer than *current*."""
-        try:
-            from packaging.version import Version
-            return Version(latest) > Version(current)
-        except Exception:
-            return bool(latest and latest != current)
-
-    def _run_megqc_install(
-        self,
-        version: Optional[str] = None,
-        include_pre: bool = False,
-    ) -> Tuple[bool, str]:
-        """Run pip to install meg_qc.
-
-        Parameters
-        ----------
-        version:
-            Pin to this exact version (``pip install meg_qc==X.Y.Z``).
-            When *None*, upgrades to the latest release.
-        include_pre:
-            Append ``--pre`` when *version* is *None* (upgrade path only).
-        """
-        if version:
-            cmd = [sys.executable, "-m", "pip", "install", f"meg_qc=={version}"]
-        else:
-            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "meg_qc"]
-            if include_pre:
-                cmd.append("--pre")
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
-        except Exception as exc:
-            return False, str(exc)
-        if proc.returncode == 0:
-            return True, (proc.stdout or "").strip()
-        return False, (proc.stderr or proc.stdout or "Unknown pip error.").strip()
-
-    def _finish_install(self, ok: bool, out: str) -> None:
-        """Show success / failure dialog after any pip install."""
-        if ok:
-            QMessageBox.information(
-                self, "Update completed",
-                "MEGqc was updated successfully.\n"
-                "Please restart the GUI to load the new version.",
-            )
-            self._log("Self-update completed successfully.")
-        else:
-            QMessageBox.warning(self, "Update failed", f"pip update failed.\n\n{out}")
-            self._log(f"Self-update failed: {out}")
-
-    # ------------------------------------------------------------------
-    # Main update entry point
-    # ------------------------------------------------------------------
-
-    def _check_for_updates(self) -> None:
-        """Check PyPI and optionally upgrade MEGqc from the GUI.
-
-        Three paths are offered via an initial choice dialog:
-        • Latest stable   — upgrade to the latest non-pre-release.
-        • Latest (β/rc)   — upgrade to the highest version including betas.
-        • Choose version… — pick any published version from a dropdown list.
-        """
-        current = self.installed_megqc_version
-
-        # ── Initial choice dialog ──────────────────────────────────────
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Check updates")
-        msg.setText(
-            f"Installed: MEGqc  {current}\n\n"
-            "How would you like to check for updates?"
-        )
-        btn_stable  = msg.addButton("Latest stable",        QMessageBox.ButtonRole.AcceptRole)
-        btn_pre     = msg.addButton("Latest (incl. beta)",  QMessageBox.ButtonRole.AcceptRole)
-        btn_pick    = msg.addButton("Choose version…",      QMessageBox.ButtonRole.ActionRole)
-        _btn_cancel = msg.addButton("Cancel",               QMessageBox.ButtonRole.RejectRole)
-        msg.setDefaultButton(btn_stable)
-        msg.exec()
-
-        clicked = msg.clickedButton()
-        if clicked is _btn_cancel or clicked is None:
-            return
-
-        # ── "Choose version…" path ─────────────────────────────────────
-        if clicked is btn_pick:
-            self._log("Fetching all available versions from PyPI…")
-            try:
-                all_versions = self._fetch_all_pypi_versions(include_pre=True)
-            except Exception as exc:
-                QMessageBox.warning(self, "Check updates", f"Could not fetch version list.\n\n{exc}")
-                self._log(f"Version fetch failed: {exc}")
-                return
-
-            if not all_versions:
-                QMessageBox.warning(self, "Check updates", "No versions found on PyPI.")
-                return
-
-            # Mark the installed version so the user can spot it easily.
-            labelled = [
-                f"{v}  ← installed" if v == current else v
-                for v in all_versions
-            ]
-
-            picked_label, ok = QInputDialog.getItem(
-                self,
-                "Choose MEGqc version",
-                f"Select a version to install  (installed: {current}):",
-                labelled,
-                0,      # default selection: newest
-                False,  # not editable
-            )
-            if not ok or not picked_label:
-                return
-
-            # Strip annotation back to a plain version string.
-            picked_version = picked_label.split("  ←")[0].strip()
-
-            if picked_version == current:
-                QMessageBox.information(
-                    self, "No change",
-                    f"Version {picked_version} is already installed."
-                )
-                return
-
-            try:
-                from packaging.version import Version as _V
-                is_pre = _V(picked_version).is_prerelease
-            except Exception:
-                is_pre = any(t in picked_version for t in ("a", "b", "rc", "dev"))
-
-            pre_note = "\n⚠️  This is a pre-release (beta / rc) version." if is_pre else ""
-            answer = QMessageBox.question(
-                self, "Install version",
-                f"Install MEGqc  {picked_version}?{pre_note}\n\n"
-                f"Currently installed: {current}",
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-
-            self._log(f"Running: pip install meg_qc=={picked_version}")
-            self._finish_install(*self._run_megqc_install(version=picked_version))
-            return
-
-        # ── "Latest stable" / "Latest incl. beta" path ────────────────
-        include_pre = (clicked is btn_pre)
-        self._log(f"Checking PyPI for updates (installed: {current}, include_pre={include_pre})…")
-
-        try:
-            latest = self._fetch_latest_pypi_version(include_pre=include_pre)
-        except Exception as exc:
-            QMessageBox.warning(self, "Check updates", f"Could not check PyPI for updates.\n\n{exc}")
-            self._log(f"Update check failed: {exc}")
-            return
-
-        if not latest:
-            QMessageBox.warning(self, "Check updates", "PyPI responded without a valid version string.")
-            self._log("Update check failed: empty PyPI version response.")
-            return
-
-        self._log(f"PyPI latest: {latest}  (pre-release channel: {include_pre})")
-
-        if not self._is_newer_version(latest, current):
-            QMessageBox.information(
-                self, "Check updates",
-                f"You are up to date.\nInstalled: {current}\nPyPI: {latest}",
-            )
-            return
-
-        pre_note = "\n⚠️  This is a pre-release (beta / rc) version." if include_pre else ""
-        answer = QMessageBox.question(
-            self, "Update available",
-            f"A newer MEGqc version is available.{pre_note}\n\n"
-            f"Installed: {current}\n"
-            f"PyPI:      {latest}\n\n"
-            "Do you want to update now using pip?",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            self._log("Update skipped by user.")
-            return
-
-        self._log(f"Running: pip install --upgrade meg_qc{' --pre' if include_pre else ''}")
-        self._finish_install(*self._run_megqc_install(include_pre=include_pre))
 
     def _animate_spinner(self) -> None:
         if not self.task_started_at:
@@ -2342,7 +2161,7 @@ class MainWindow(QMainWindow):
         log_header_lay.addWidget(self.btn_live_output)
         self.btn_open_cli = QPushButton("Open CLI")
         self.btn_open_cli.setToolTip(
-            "Open a system terminal with the MEGqc Python environment activated,\n"
+            "Open a system terminal with the MEEGqc Python environment activated,\n"
             "ready to run CLI commands like: run-megqc --inputdata /path/to/dataset"
         )
         self.btn_open_cli.clicked.connect(self._open_cli_terminal)
@@ -2355,11 +2174,13 @@ class MainWindow(QMainWindow):
         bottom_lay = QHBoxLayout(bottom_row)
         bottom_lay.setContentsMargins(0, 0, 0, 0)
         bottom_lay.setSpacing(10)
-        self.lbl_version = QLabel(f"MEGqc v{self.installed_megqc_version}")
+        self.lbl_version = QLabel(f"MEEGqc v{self.installed_megqc_version}")
         self.lbl_version.setToolTip("Installed package version.")
         self.btn_check_updates = QPushButton("Check updates")
-        self.btn_check_updates.setToolTip("Check PyPI for newer MEGqc versions and optionally update.")
-        self.btn_check_updates.clicked.connect(self._check_for_updates)
+        self.btn_check_updates.setToolTip("Check PyPI for newer MEEGqc versions and optionally update.")
+        self.btn_check_updates.clicked.connect(
+            lambda: check_for_updates_interactive(self, self.btn_check_updates)
+        )
         bottom_lay.addWidget(self.lbl_version)
         bottom_lay.addWidget(self.btn_check_updates)
         bottom_lay.addStretch(1)
@@ -3242,7 +3063,7 @@ class MainWindow(QMainWindow):
     # Open CLI terminal                #
     # ──────────────────────────────── #
     def _open_cli_terminal(self) -> None:
-        """Open a system terminal pre-configured with the MEGqc Python env.
+        """Open a system terminal pre-configured with the MEEGqc Python env.
 
         Delegates to ``output_monitoring.open_cli_terminal`` which handles
         macOS (Terminal.app), Windows (cmd.exe) and Linux (gnome-terminal /
@@ -3267,10 +3088,14 @@ class MainWindow(QMainWindow):
 
 
 def run_megqc_gui():
-    """Entry point called by the ``megqc`` console script."""
+    """Entry point called by the ``megqc`` / ``meegqc`` console scripts."""
     _ensure_xcb_cursor()  # no-op on non-Linux; auto-fixes missing libxcb-cursor0
     from PyQt6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication(sys.argv)
+    # Application-wide window icon: every QMainWindow / QDialog that does
+    # not explicitly setWindowIcon() inherits this. Covers the QC Viewer,
+    # the Live Terminal, the Settings dialogs, and any future sub-window.
+    app.setWindowIcon(_build_app_icon())
     # Fusion style is mandatory: it is the only Qt built-in style that fully
     # respects custom QPalette colours on macOS and Windows.  Without it,
     # the platform-native renderer ignores palette overrides and the themed

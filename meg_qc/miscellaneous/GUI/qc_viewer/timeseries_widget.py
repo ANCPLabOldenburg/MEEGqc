@@ -10,7 +10,7 @@ Features
 * Resampling & decimation
 * Filtering: high-pass, low-pass, band-pass, notch (via MNE)
 * PSD computation popup
-* MEGqc annotation overlays (coloured regions + channel label tinting)
+* MEEGqc annotation overlays (coloured regions + channel label tinting)
 * Epoch grid overlay
 * Events.tsv overlay from EventSummary JSON
 * Thicker event lines with width/color controls
@@ -196,7 +196,7 @@ class TimeSeriesWidget(QWidget):
         self._active_worker: Optional[_LoadWorker] = None
 
         # Preferences
-        self._settings = QSettings("ANCP", "MEGqc_Viewer")
+        self._settings = QSettings("ANCP", "MEEGqc_Viewer")
         self._dark_plot = self._settings.value("viewer/dark_plot", False, type=bool)
 
         self._build_ui()
@@ -267,7 +267,7 @@ class TimeSeriesWidget(QWidget):
 
         self._annot_panel = self._build_annotation_panel()
         self._annot_toggle_btn = self._make_section_toggle(
-            "MEGqc Annotation Overlays", self._annot_panel, expanded=False
+            "MEEGqc Annotation Overlays", self._annot_panel, expanded=False
         )
         main_layout.addWidget(self._annot_toggle_btn)
         main_layout.addWidget(self._annot_panel)
@@ -478,7 +478,7 @@ class TimeSeriesWidget(QWidget):
         return nav
 
     def _build_annotation_panel(self) -> QGroupBox:
-        box = QGroupBox("MEGqc Annotation Overlays")
+        box = QGroupBox("MEEGqc Annotation Overlays")
         outer_lay = QHBoxLayout(box)
         outer_lay.setContentsMargins(4, 4, 4, 4)
         outer_lay.setSpacing(12)
@@ -698,7 +698,7 @@ class TimeSeriesWidget(QWidget):
         actions_lay.addWidget(self.btn_load_annot)
 
         self.btn_ext_path = QPushButton("Set External Path...")
-        self.btn_ext_path.setToolTip("Set an external output directory where MEGqc derivatives may reside")
+        self.btn_ext_path.setToolTip("Set an external output directory where MEEGqc derivatives may reside")
         self.btn_ext_path.clicked.connect(self._set_external_path_dialog)
         actions_lay.addWidget(self.btn_ext_path)
 
@@ -1763,7 +1763,7 @@ class TimeSeriesWidget(QWidget):
     # ================================================================ #
     def _load_annotations_dialog(self):
         from PyQt6.QtWidgets import QFileDialog, QInputDialog
-        calc_dir = QFileDialog.getExistingDirectory(self, "Select MEGqc calculation directory (sub-XXX/)")
+        calc_dir = QFileDialog.getExistingDirectory(self, "Select MEEGqc calculation directory (sub-XXX/)")
         if not calc_dir:
             return
         self._show_loading("Loading annotations…")
@@ -1779,7 +1779,7 @@ class TimeSeriesWidget(QWidget):
             self._active_worker = None
             if not prefixes:
                 QMessageBox.warning(self, "No annotations found",
-                                    "Could not find MEGqc derivative files in this directory.")
+                                    "Could not find MEEGqc derivative files in this directory.")
                 return
             if len(prefixes) == 1:
                 prefix = prefixes[0]
@@ -1975,7 +1975,7 @@ class TimeSeriesWidget(QWidget):
         found_dirs = self._collect_scan_dirs(filepath, sub_entity)
         if not found_dirs:
             QMessageBox.information(self, "Scan Result",
-                                    f"No MEGqc calculation directory found for '{sub_entity}'.\n\n"
+                                    f"No MEEGqc calculation directory found for '{sub_entity}'.\n\n"
                                     "Make sure the derivatives are in a 'derivatives/Meg_QC/calculation/' "
                                     "directory structure.")
             return
@@ -2025,7 +2025,7 @@ class TimeSeriesWidget(QWidget):
                                         f"Found calculation directory but no annotation data:\n{best_dir}")
         else:
             QMessageBox.information(self, "Scan Result",
-                                    "No matching MEGqc annotations found.\n\n"
+                                    "No matching MEEGqc annotations found.\n\n"
                                     "Searched directories:\n" + "\n".join(found_dirs))
 
     # ================================================================ #
@@ -2042,7 +2042,7 @@ class TimeSeriesWidget(QWidget):
 
     def _set_external_path_dialog(self):
         from PyQt6.QtWidgets import QFileDialog
-        d = QFileDialog.getExistingDirectory(self, "Select external MEGqc output directory")
+        d = QFileDialog.getExistingDirectory(self, "Select external MEEGqc output directory")
         if d:
             self.add_external_annotation_path(d)
             self.statusMessage.emit(f"External annotation path added: {d}")
@@ -2151,7 +2151,7 @@ class TimeSeriesWidget(QWidget):
         profiles = sorted(profile_map.keys())
         chosen, ok = QInputDialog.getItem(
             self, "Select Profile",
-            f"Multiple MEGqc profiles found ({len(profiles)}).\n"
+            f"Multiple MEEGqc profiles found ({len(profiles)}).\n"
             "Choose the profile to load annotations from:",
             profiles, 0, False)
         if not ok:

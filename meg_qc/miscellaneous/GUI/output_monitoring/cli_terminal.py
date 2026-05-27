@@ -1,5 +1,5 @@
 """
-cli_terminal.py – Open the host OS terminal with the MEGqc venv pre-activated.
+cli_terminal.py – Open the host OS terminal with the MEEGqc venv pre-activated.
 
 Strategy
 --------
@@ -25,30 +25,36 @@ from PyQt6.QtWidgets import QMessageBox
 
 
 # ── banner lines (plain ASCII — no encoding issues in any shell) ───────────────
+#
+# Each pipeline command ships under TWO equivalent names: the original
+# ``*-megqc*`` and the rebrand-aligned ``*-meegqc*`` alias. They dispatch
+# to the same Python function and accept the same flags. Pick whichever
+# you prefer. ``globalqualityindex`` has no alias (no "megqc" in its name).
 _BANNER_LINES = [
     "echo ''",
-    "echo '======================================================'",
-    "echo '   MEGqc CLI  -  activated environment'",
-    "echo '======================================================'",
+    "echo '============================================================'",
+    "echo '   MEEGqc CLI  -  activated environment'",
+    "echo '============================================================'",
     "echo ''",
-    "echo 'Entry points  (run each with --help for full options):'",
+    "echo 'Entry points  (run each with --help for full options).'",
+    "echo 'Both naming families dispatch to the same code:'",
     "echo ''",
-    "echo '  megqc'",
-    "echo '      Launch the MEGqc graphical interface.'",
+    "echo '  GUI launcher:'",
+    "echo '    megqc      |  meegqc'",
     "echo ''",
-    "echo '  run-megqc --help'",
-    "echo '      QA/QC calculation pipeline.'",
+    "echo '  Calculation pipeline:'",
+    "echo '    run-megqc  |  run-meegqc'",
     "echo ''",
-    "echo '  run-megqc-plotting --help'",
-    "echo '      Report plotting module.'",
+    "echo '  Report plotting:'",
+    "echo '    run-megqc-plotting  |  run-meegqc-plotting'",
     "echo ''",
-    "echo '  globalqualityindex --help'",
-    "echo '      Global Quality Index (GQI) module.'",
+    "echo '  Configuration / settings utility:'",
+    "echo '    get-megqc-config  |  get-meegqc-config'",
     "echo ''",
-    "echo '  get-megqc-config --help'",
-    "echo '      Configuration / settings utility.'",
+    "echo '  Global Quality Index (GQI):'",
+    "echo '    globalqualityindex'",
     "echo ''",
-    "echo '======================================================'",
+    "echo '============================================================'",
     "echo ''",
 ]
 
@@ -83,7 +89,7 @@ def _write_startup_script(activate_cmd: str, shell: str = "zsh",
 
 
 def open_cli_terminal(log_callback: Optional[Callable[[str], None]] = None) -> None:
-    """Open a system terminal pre-configured with the MEGqc Python environment."""
+    """Open a system terminal pre-configured with the MEEGqc Python environment."""
 
     def _log(msg: str) -> None:
         if log_callback is not None:
@@ -117,21 +123,31 @@ def open_cli_terminal(log_callback: Optional[Callable[[str], None]] = None) -> N
                 bat_lines.append(f'set PATH={os.path.dirname(python_bin)};%PATH%')
             bat_lines += [
                 "echo.",
-                "echo ======================================================",
-                "echo    MEGqc CLI  -  activated environment",
-                "echo ======================================================",
+                "echo ============================================================",
+                "echo    MEEGqc CLI  -  activated environment",
+                "echo ============================================================",
                 "echo.",
-                "echo Entry points (run each with --help for full options):",
+                "echo Entry points (run each with --help for full options).",
+                "echo Both naming families dispatch to the same code:",
                 "echo.",
-                "echo   megqc                          Launch the GUI.",
-                "echo   run-megqc --help               Calculation pipeline.",
-                "echo   run-megqc-plotting --help      Plotting module.",
-                "echo   globalqualityindex --help      GQI module.",
-                "echo   get-megqc-config --help        Config utility.",
+                "echo   GUI launcher:",
+                "echo     megqc      ^|  meegqc",
+                "echo.",
+                "echo   Calculation pipeline:",
+                "echo     run-megqc  ^|  run-meegqc",
+                "echo.",
+                "echo   Report plotting:",
+                "echo     run-megqc-plotting  ^|  run-meegqc-plotting",
+                "echo.",
+                "echo   Configuration / settings utility:",
+                "echo     get-megqc-config  ^|  get-meegqc-config",
+                "echo.",
+                "echo   Global Quality Index (GQI):",
+                "echo     globalqualityindex",
                 "echo.",
                 f"echo Python: {python_bin}",
                 "echo.",
-                "echo ======================================================",
+                "echo ============================================================",
                 "echo.",
             ]
             fd, bat_path = tempfile.mkstemp(suffix=".bat", prefix="megqc_cli_")
@@ -176,7 +192,7 @@ def open_cli_terminal(log_callback: Optional[Callable[[str], None]] = None) -> N
                     "Could not find a supported terminal emulator.\n"
                     "Activate the environment manually:\n\n"
                     f"  source {activate_path}\n"
-                    "  run-megqc --help",
+                    "  run-meegqc --help        # or: run-megqc --help",
                 )
 
     except Exception as exc:

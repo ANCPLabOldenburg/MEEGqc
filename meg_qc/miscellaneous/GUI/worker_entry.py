@@ -1,4 +1,4 @@
-"""Entry point for subprocesses spawned by the MEGqc GUI.
+"""Entry point for subprocesses spawned by the MEEGqc GUI.
 
 Each GUI action launches a fresh Python interpreter using
 ``python -m meg_qc.miscellaneous.GUI.worker_entry`` so that joblib
@@ -23,7 +23,7 @@ def _configure_utf8_stdio() -> None:
     """Reconfigure stdout/stderr to use UTF-8 on Windows.
 
     Windows consoles default to a narrow encoding (e.g. cp1252) that cannot
-    represent many Unicode characters used in MEGqc messages (e.g. the
+    represent many Unicode characters used in MEEGqc messages (e.g. the
     non-breaking hyphen U+2011, warning sign U+26A0, arrows …).  Setting the
     environment variable *before* any subprocesses are spawned (joblib workers
     included) ensures they all inherit UTF-8 I/O.
@@ -70,7 +70,7 @@ def _decode_args(payload: str) -> List[Any]:
 
 def main() -> int:
     _configure_utf8_stdio()
-    parser = argparse.ArgumentParser(description="MEGqc GUI worker entry point")
+    parser = argparse.ArgumentParser(description="MEEGqc GUI worker entry point")
     parser.add_argument("--func", required=True, help="module:function path to invoke")
     parser.add_argument("--args", required=True, help="JSON-encoded positional arguments")
     ns = parser.parse_args()

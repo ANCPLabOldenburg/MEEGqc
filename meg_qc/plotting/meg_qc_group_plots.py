@@ -12,7 +12,6 @@ Public entrypoint
 
 from __future__ import annotations
 
-import configparser
 import datetime as dt
 import json
 import os
@@ -38,8 +37,8 @@ except Exception:
 
 import meg_qc
 from meg_qc.calculation.meg_qc_pipeline import resolve_analysis_root
-from meg_qc.plotting.topomap_2d import make_flat_topomap_figure
-from meg_qc.plotting.universal_plots import amplitude_scale_unit
+from meg_qc.plotting.topomap_2d import make_flat_topomap_figure, BLUE_RED_COLORSCALE
+from meg_qc.plotting.universal_plots import amplitude_scale_unit, _add_colormap_menu_3d
 
 
 MODULES = ("STD", "PTP", "PSD", "ECG", "EOG", "Muscle")
@@ -1898,7 +1897,10 @@ def plot_topomap_3d_if_available(
             marker={
                 "size": 9.5,
                 "color": vg_arr,
-                "colorscale": "Viridis",
+                # Match the subject report's default convention (high=red, low=blue);
+                # the colour-map dropdown added below lets users switch palettes.
+                "colorscale": BLUE_RED_COLORSCALE,
+                "reversescale": False,
                 "showscale": True,
                 "colorbar": {"title": color_title, "x": 0.95, "len": 0.82},
                 "line": {"width": 0.3, "color": "#2F3E46"},
@@ -1922,6 +1924,9 @@ def plot_topomap_3d_if_available(
         },
     )
     _add_solid_cap_toggle_to_topomap_3d(fig, xg_arr, yg_arr, zg_arr)
+    # The sensor markers are trace 0 (the cap mesh is added afterwards), so the
+    # colour-map dropdown restyles trace 0 — same controls as the subject report.
+    _add_colormap_menu_3d(fig, 0)
     return fig
 
 
@@ -2372,37 +2377,21 @@ def _topomap_blocks(
     return "".join(chunks)
 
 
-def _load_settings_snapshot(megqc_root: str) -> str:
-    """Load the latest MEGqc settings snapshot from one analysis root."""
-    config_dir = Path(megqc_root) / "config"
-    ini_files = sorted(config_dir.glob("*.ini"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not ini_files:
-        return "No settings snapshot file was found."
+def _load_settings_snapshot(megqc_root: str) -> dict:
+    """Structured, QA-safe snapshot of the settings used for this analysis.
 
-    chosen = ini_files[0]
-    cfg = configparser.ConfigParser()
-    cfg.read(chosen)
-
-    sections = ["default", "Epoching", "STD", "PTP_manual", "PSD", "ECG", "EOG", "Muscle"]
-    lines = [f"source={chosen}"]
-    disallowed_tokens = ("bad", "good", "reject", "flag", "exceed", "pass", "fail", "threshold")
-    for section in sections:
-        if section in cfg:
-            qa_safe_items = []
-            for key, value in cfg[section].items():
-                key_l = key.lower()
-                val_l = str(value).lower()
-                if any(tok in key_l for tok in disallowed_tokens):
-                    continue
-                if any(tok in val_l for tok in disallowed_tokens):
-                    continue
-                qa_safe_items.append(f"{key}={value}")
-            if qa_safe_items:
-                lines.append(f"[{section}] {', '.join(qa_safe_items)}")
-            else:
-                lines.append(f"[{section}] QA-safe settings view active")
-
-    return "\n".join(lines) if lines else f"source={chosen}"
+    Delegates to the shared renderer in ``universal_plots`` so the QA group (and
+    multi-sample) reports show the same elegant card view as the subject report.
+    It parses *whatever* sections exist in the profile's ``*UsedSettings*.ini``
+    (future-proof) while hiding QC-threshold keys from the QA view.
+    """
+    from meg_qc.plotting.universal_plots import (
+        resolve_used_settings_path,
+        parse_ini_settings_to_sections,
+        QA_DISALLOWED_TOKENS,
+    )
+    settings_path = resolve_used_settings_path(Path(megqc_root) / "config")
+    return parse_ini_settings_to_sections(settings_path, disallowed_tokens=QA_DISALLOWED_TOKENS)
 
 
 def _summary_table_html(acc: ChTypeAccumulator) -> str:
@@ -2451,18 +2440,12 @@ def _summary_table_html(acc: ChTypeAccumulator) -> str:
     )
 
 
-def _paths_html(source_paths: set) -> str:
-    if not source_paths:
-        return "<p>No machine-readable derivatives were consumed.</p>"
-
-    paths = sorted(source_paths)
-    max_lines = 80
-    visible = paths[:max_lines]
-    hidden = max(0, len(paths) - max_lines)
-    items = "".join(f"<li><code>{p}</code></li>" for p in visible)
-    if hidden > 0:
-        items += f"<li>... {hidden} additional paths omitted for brevity.</li>"
-    return f"<ul>{items}</ul>"
+def _machine_readable_rows(tab_accumulators: Dict[str, "ChTypeAccumulator"]) -> List[str]:
+    """Union of machine-readable derivative paths consumed across all tabs."""
+    paths: set = set()
+    for acc in tab_accumulators.values():
+        paths |= set(getattr(acc, "source_paths", set()) or set())
+    return sorted(paths)
 
 
 def _plot_summary_distribution_recordings(
@@ -5353,8 +5336,6 @@ def _build_cohort_overview_section(acc: ChTypeAccumulator, amplitude_unit: str, 
         return (
             "<section><h2>Cohort QA overview</h2>"
             + _summary_table_html(acc)
-            + "<h3>Machine-readable derivatives used</h3>"
-            + _paths_html(acc.source_paths)
             + "</section>"
         )
 
@@ -5439,8 +5420,6 @@ def _build_cohort_overview_section(acc: ChTypeAccumulator, amplitude_unit: str, 
         + heatmap_tabs
         + "<h3>Top subject epoch profiles</h3>"
         + profile_tabs
-        + "<h3>Machine-readable derivatives used</h3>"
-        + _paths_html(acc.source_paths)
         + "</section>"
     )
 
@@ -6323,9 +6302,10 @@ def _build_tab_content(tab_name: str, acc: ChTypeAccumulator, is_combined: bool)
 def _build_report_html(
     dataset_name: str,
     tab_accumulators: Dict[str, ChTypeAccumulator],
-    settings_snapshot: str,
+    settings_snapshot: dict,
 ) -> str:
     """Compose the self-contained HTML report (tabs + plots + client JS)."""
+    from meg_qc.plotting.universal_plots import build_settings_tab_html, SETTINGS_TAB_CSS as settings_css
     _reset_lazy_figure_store()
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version = getattr(meg_qc, "__version__", "unknown")
@@ -6342,6 +6322,19 @@ def _build_report_html(
         tab_buttons.append(f"<button class='tab-btn{active_class}' data-target='{tab_id}'>{tab}</button>")
         content = _build_tab_content(tab, tab_accumulators[tab], is_combined=(tab == "Combined (mag+grad)"))
         tab_divs.append(f"<div id='{tab_id}' class='tab-content{active_class}'>{content}</div>")
+
+    # Dedicated Settings tab (snapshot + machine-readable input subsection),
+    # mirroring the subject report's layout.
+    settings_tab_id = f"tab-{len(available_tabs)}"
+    settings_content = build_settings_tab_html(
+        [(None, settings_snapshot)],
+        intro="The QA-safe parameters used to compute this report.",
+        machine_readable_rows=_machine_readable_rows(tab_accumulators),
+        machine_readable_intro="Run-level TSV derivatives consumed to build this report.",
+    )
+    tab_buttons.append(f"<button class='tab-btn' data-target='{settings_tab_id}'>Settings</button>")
+    tab_divs.append(f"<div id='{settings_tab_id}' class='tab-content'>{settings_content}</div>")
+
     lazy_payload_scripts = _lazy_payload_script_tags_html()
 
     return f"""
@@ -6723,6 +6716,7 @@ def _build_report_html(
     @keyframes spin {{
       to {{ transform: rotate(360deg); }}
     }}
+{settings_css}
   </style>
 </head>
 <body>
@@ -6743,8 +6737,6 @@ def _build_report_html(
           <p><strong>Epoch label:</strong> epochs</p>
         </div>
       </div>
-      <h3>Settings snapshot</h3>
-      <pre>{settings_snapshot}</pre>
       <p><strong>Important:</strong> Cohort QA overview combines global cohort footprints and subject-aware summaries; metric-level panels preserve recording identity in hover text.</p>
       <div class="report-tools">
         <button id="grid-toggle-btn" class="tool-btn active" type="button">Hide grids</button>

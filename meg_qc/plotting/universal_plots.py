@@ -7,7 +7,10 @@ import random
 import copy
 import os
 import re
-from typing import List
+import html
+import configparser
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple, Dict, Any
 import matplotlib.pyplot as plt
 from mne.preprocessing import compute_average_dev_head_t
 from meg_qc.calculation.objects import QC_derivative, MEG_channel
@@ -119,6 +122,282 @@ def _add_colormap_menu_3d(fig: go.Figure, trace_idx: int = 0) -> None:
         pad=dict(r=2, t=2, l=2, b=2), buttons=buttons,
     ))
     fig.update_layout(updatemenus=menus)
+
+
+# ---------------------------------------------------------------------------
+# Shared "Settings" tab rendering. Every report (subject, QA group, QC group and
+# multi-sample) renders the exact same elegant, self-contained snapshot so the
+# look stays consistent and the text always fits the report column.
+# ---------------------------------------------------------------------------
+
+# QA reports must not reveal QC thresholds; keys/values containing one of these
+# tokens are hidden from the QA-safe snapshot view.
+QA_DISALLOWED_TOKENS = ("bad", "good", "reject", "flag", "exceed", "pass", "fail", "threshold")
+
+# CSS shared by every report's Settings tab. Injected verbatim into each report
+# template via a ``{settings_css}`` placeholder (f-string substitution does not
+# re-scan the value, so the single braces below are safe).
+SETTINGS_TAB_CSS = """
+    .settings-snapshot .settings-intro { color: #334e68; font-size: 13px; margin: 4px 0 10px; }
+    .settings-snapshot .settings-ds {
+      margin: 16px 0 6px;
+      font-size: 15px;
+      color: #0f3d6e;
+      border-left: 4px solid #2b6cb0;
+      padding-left: 10px;
+    }
+    .settings-snapshot .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 14px;
+      margin-top: 8px;
+    }
+    .settings-card {
+      border: 1px solid #d7e6f7;
+      border-radius: 12px;
+      background: #fbfdff;
+      box-shadow: 0 3px 12px rgba(7, 41, 74, 0.06);
+      overflow: hidden;
+      min-width: 0;
+    }
+    .settings-card > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 14px;
+      font-weight: 700;
+      color: #0f3d6e;
+      background: linear-gradient(135deg, #eaf3ff, #f5f9ff);
+      border-bottom: 1px solid #e1edfa;
+    }
+    .settings-card > summary::-webkit-details-marker { display: none; }
+    .settings-card > summary::before { content: "\\25B8  "; color: #2b6cb0; }
+    .settings-card[open] > summary::before { content: "\\25BE  "; }
+    .settings-card .settings-note { padding: 8px 14px; color: #51657d; font-style: italic; font-size: 13px; }
+    table.settings-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+    table.settings-table td {
+      padding: 6px 12px;
+      border-bottom: 1px solid #eef4fb;
+      vertical-align: top;
+    }
+    table.settings-table td.set-key {
+      color: #334e68;
+      font-weight: 600;
+      width: 46%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    table.settings-table td.set-val {
+      color: #0b1f33;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .machine-readable { margin-top: 14px; max-width: 100%; }
+    .machine-readable .mr-intro { color: #334e68; font-size: 13px; margin: 4px 0 8px; }
+    .machine-readable .mr-box {
+      max-width: 100%;
+      max-height: 360px;
+      overflow: auto;
+      border: 1px solid #d8e4f3;
+      border-radius: 10px;
+      background: #f7fbff;
+    }
+    .machine-readable ul { list-style: none; margin: 0; padding: 0; }
+    .machine-readable li {
+      padding: 6px 12px;
+      border-bottom: 1px solid #eef4fb;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      color: #0b1f33;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
+    }
+    .machine-readable li:last-child { border-bottom: none; }
+    .machine-readable code {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
+      background: none;
+    }
+"""
+
+
+def resolve_used_settings_path(config_dir) -> Optional[Path]:
+    """Locate the settings snapshot written by the calculation step.
+
+    Prefers the newest ``*UsedSettings*.ini`` snapshot saved under the analysis
+    ``config`` folder (the exact settings used for this run — every profile gets
+    one), falls back to any ``.ini`` there, then to the packaged default
+    ``settings.ini`` so the snapshot is never empty.
+    """
+    if config_dir is not None:
+        try:
+            cfg_dir = Path(config_dir)
+            if cfg_dir.is_dir():
+                snaps = sorted(
+                    cfg_dir.glob("*UsedSettings*.ini"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if snaps:
+                    return snaps[0]
+                any_ini = sorted(cfg_dir.glob("*.ini"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if any_ini:
+                    return any_ini[0]
+        except Exception:
+            pass
+    # Package default fallback (meg_qc/settings/settings.ini).
+    default = Path(__file__).resolve().parent.parent / "settings" / "settings.ini"
+    return default if default.exists() else None
+
+
+def parse_ini_settings_to_sections(
+    ini_path,
+    *,
+    disallowed_tokens: Optional[Sequence[str]] = None,
+    sections: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Parse an .ini settings file into a structured, render-ready snapshot.
+
+    Returns ``{"source": <file name or None>, "sections": [...]}`` where each
+    section is either ``{"name": str, "items": [(key, value), ...]}`` or, when a
+    section is fully filtered out, ``{"name": str, "note": str}``.
+
+    ``disallowed_tokens`` hides any key/value containing one of the tokens (used
+    for the QA-safe view so QC thresholds never leak into QA reports).
+    ``sections`` restricts and orders which sections are shown (defaults to the
+    file's own order). Parsing via ``configparser`` keeps values containing
+    commas/equals intact, unlike re-splitting a flattened text snapshot.
+    """
+    if ini_path is None:
+        return {"source": None, "sections": []}
+    p = Path(ini_path)
+    if not p.exists():
+        return {"source": None, "sections": []}
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    try:
+        parser.read(p, encoding="utf-8")
+    except Exception:
+        return {"source": p.name, "sections": []}
+
+    tokens = tuple(t.lower() for t in (disallowed_tokens or ()))
+    order = list(sections) if sections is not None else parser.sections()
+    out_sections: List[Dict[str, Any]] = []
+    for section in order:
+        if section not in parser:
+            continue
+        raw = list(parser.items(section))
+        if not raw:
+            continue  # genuinely empty section — skip in every mode
+        items: List[Tuple[str, str]] = []
+        for key, value in raw:
+            if tokens and (any(t in key.lower() for t in tokens)
+                           or any(t in str(value).lower() for t in tokens)):
+                continue
+            items.append((key, value))
+        if items:
+            out_sections.append({"name": section, "items": items})
+        elif tokens:
+            # Had settings, but all were QA-sensitive and hidden from this view.
+            out_sections.append({"name": section, "note": "QA-safe settings view active"})
+    return {"source": p.name, "sections": out_sections}
+
+
+def render_settings_cards(snapshot: Optional[Dict[str, Any]], *, heading: Optional[str] = None) -> str:
+    """Render one structured snapshot as a grid of collapsible key/value cards."""
+    if not snapshot or not snapshot.get("sections"):
+        head = f"<h3 class='settings-ds'>{html.escape(heading)}</h3>" if heading else ""
+        return head + "<p class='settings-note'>No settings could be located for this analysis.</p>"
+
+    cards: List[str] = []
+    for section in snapshot["sections"]:
+        name = html.escape(str(section.get("name", "")))
+        if "items" in section:
+            rows = "".join(
+                f"<tr><td class='set-key'>{html.escape(str(k))}</td>"
+                f"<td class='set-val'>{html.escape(str(v)) if str(v).strip() else '<em>(empty)</em>'}</td></tr>"
+                for k, v in section["items"]
+            )
+            cards.append(
+                "<details class='settings-card' open>"
+                f"<summary>{name}</summary>"
+                f"<table class='settings-table'><tbody>{rows}</tbody></table>"
+                "</details>"
+            )
+        else:
+            note = html.escape(str(section.get("note", "")))
+            cards.append(
+                "<details class='settings-card'>"
+                f"<summary>{name}</summary>"
+                f"<div class='settings-note'>{note}</div>"
+                "</details>"
+            )
+
+    parts: List[str] = []
+    if heading:
+        parts.append(f"<h3 class='settings-ds'>{html.escape(heading)}</h3>")
+    src = snapshot.get("source")
+    if src:
+        parts.append(f"<p class='settings-intro'>Source: <code>{html.escape(str(src))}</code></p>")
+    parts.append(f"<div class='settings-grid'>{''.join(cards)}</div>")
+    return "".join(parts)
+
+
+def render_machine_readable_subsection(
+    rows: Sequence[str],
+    *,
+    intro: Optional[str] = None,
+    max_lines: int = 300,
+) -> str:
+    """Render a machine-readable input list that always fits its box.
+
+    Long paths wrap inside a bordered, scrollable box so the text never spills
+    beyond the report column or window.
+    """
+    rows = [str(r) for r in rows]
+    if not rows:
+        inner = "<p class='settings-note'>No machine-readable inputs were consumed.</p>"
+    else:
+        visible = rows[:max_lines]
+        hidden = max(0, len(rows) - max_lines)
+        items = "".join(f"<li><code>{html.escape(r)}</code></li>" for r in visible)
+        if hidden > 0:
+            items += f"<li>... {hidden} additional entries omitted for brevity.</li>"
+        inner = f"<div class='mr-box'><ul>{items}</ul></div>"
+    intro_html = f"<p class='mr-intro'>{html.escape(intro)}</p>" if intro else ""
+    return (
+        "<div class='machine-readable'>"
+        "<h3>Machine-readable input</h3>"
+        f"{intro_html}{inner}"
+        "</div>"
+    )
+
+
+def build_settings_tab_html(
+    snapshots: Sequence[Tuple[Optional[str], Dict[str, Any]]],
+    *,
+    intro: Optional[str] = None,
+    machine_readable_rows: Optional[Sequence[str]] = None,
+    machine_readable_intro: Optional[str] = None,
+) -> str:
+    """Assemble a full Settings tab: snapshot card-grids + machine-readable subsection.
+
+    ``snapshots`` is a sequence of ``(heading, snapshot_dict)`` pairs; pass
+    ``heading=None`` for a single unlabelled snapshot.
+    """
+    parts: List[str] = ["<section class='settings-snapshot'>", "<h2>Settings snapshot</h2>"]
+    if intro:
+        parts.append(f"<p class='settings-intro'>{html.escape(intro)}</p>")
+    if snapshots:
+        for heading, snap in snapshots:
+            parts.append(render_settings_cards(snap, heading=heading))
+    else:
+        parts.append("<p class='settings-note'>No settings snapshot is available.</p>")
+    if machine_readable_rows is not None:
+        parts.append(render_machine_readable_subsection(machine_readable_rows, intro=machine_readable_intro))
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def _norm_colname(name: str) -> str:

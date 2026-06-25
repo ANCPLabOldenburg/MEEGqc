@@ -101,7 +101,7 @@ class SampleBundle:
     dataset_path: str
     derivatives_root: str
     reports_dir: Path
-    settings_snapshot: str
+    settings_snapshot: dict
     tab_accumulators: Dict[str, ChTypeAccumulator]
 
 
@@ -1430,11 +1430,16 @@ def _build_tab_content(
 def _build_multi_sample_report_html(
     bundles: Sequence[SampleBundle],
     tab_order: Sequence[str],
+    modality_label: str = "",
 ) -> str:
+    from meg_qc.plotting.universal_plots import build_settings_tab_html, SETTINGS_TAB_CSS as settings_css
     _reset_lazy_figure_store()
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version = getattr(meg_qc, "__version__", "unknown")
+    # Title/"Datasets" line list only the datasets actually compared in THIS
+    # (per-modality) report — the caller passes the modality-specific bundles.
     sample_names = ", ".join(bundle.sample_id for bundle in bundles)
+    title_suffix = f" — {modality_label}" if modality_label else ""
 
     tab_buttons = []
     tab_divs = []
@@ -1444,15 +1449,26 @@ def _build_multi_sample_report_html(
         tab_buttons.append(f"<button class='tab-btn{active_class}' data-target='{tab_id}'>{tab}</button>")
         content = _build_tab_content(bundles, tab)
         tab_divs.append(f"<div id='{tab_id}' class='tab-content{active_class}'>{content}</div>")
-    lazy_payload_scripts = _lazy_payload_script_tags_html()
 
-    sample_rows = "".join(
-        "<li>"
-        + f"<strong>{bundle.sample_id}</strong>: dataset=<code>{bundle.dataset_path}</code>, "
-        + f"derivatives=<code>{bundle.derivatives_root}</code>"
-        + "</li>"
+    # Dedicated Settings tab: each dataset's QA-safe settings snapshot plus the
+    # machine-readable dataset/derivatives paths (kept out of the page body so
+    # nothing overflows its box).
+    settings_pairs = [(bundle.sample_id, bundle.settings_snapshot) for bundle in bundles]
+    mr_rows = [
+        f"{bundle.sample_id}: dataset={bundle.dataset_path}, derivatives={bundle.derivatives_root}"
         for bundle in bundles
+    ]
+    settings_tab_id = f"tab-{len(tab_order)}"
+    settings_content = build_settings_tab_html(
+        settings_pairs,
+        intro="The QA-safe parameters used to compute each dataset in this comparison.",
+        machine_readable_rows=mr_rows,
+        machine_readable_intro="Dataset and derivatives paths consumed for this report.",
     )
+    tab_buttons.append(f"<button class='tab-btn' data-target='{settings_tab_id}'>Settings</button>")
+    tab_divs.append(f"<div id='{settings_tab_id}' class='tab-content'>{settings_content}</div>")
+
+    lazy_payload_scripts = _lazy_payload_script_tags_html()
 
     return f"""
 <!DOCTYPE html>
@@ -1460,7 +1476,7 @@ def _build_multi_sample_report_html(
 <head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>QA multi-sample report</title>
+  <title>QA multi-sample report{title_suffix}</title>
   <script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script>
   <style>
     body {{
@@ -1823,6 +1839,7 @@ def _build_multi_sample_report_html(
     @keyframes spin {{
       to {{ transform: rotate(360deg); }}
     }}
+{settings_css}
   </style>
 </head>
 <body>
@@ -1837,15 +1854,13 @@ def _build_multi_sample_report_html(
     <section>
       <div class=\"report-header\">
         <div>
-          <h1>MEEGqc QA multi-sample report</h1>
+          <h1>MEEGqc QA multi-sample report{title_suffix}</h1>
           <p><strong>Generated:</strong> {generated}</p>
           <p><strong>MEEGqc version:</strong> {version}</p>
           <p><strong>Datasets:</strong> {sample_names}</p>
-          <p><strong>Important:</strong> This report mirrors the group QA structure while comparing multiple datasets within each channel-type tab.</p>
+          <p><strong>Important:</strong> This report mirrors the group QA structure while comparing multiple datasets within each channel-type tab. Dataset paths and settings snapshots are in the dedicated <em>Settings</em> tab.</p>
         </div>
       </div>
-      <h3>Dataset paths</h3>
-      <ul>{sample_rows}</ul>
       <div class=\"report-tools\">
         <button id=\"grid-toggle-btn\" class=\"tool-btn active\" type=\"button\">Hide grids</button>
       </div>
@@ -2445,12 +2460,12 @@ def make_multi_sample_group_plots_meg_qc(
     meg_bundles = [b for b in bundles if any(_bundle_has_modality(b, t) for t in meg_tabs_all)]
     eeg_bundles = [b for b in bundles if _bundle_has_modality(b, "EEG")]
 
-    # Determine primary reports dir and naming
+    # Determine primary reports dir and naming.
+    # Filenames stay generic (no dataset list — long names break some file
+    # systems) and carry a unique run id so repeated runs never collide and the
+    # name is identical across platforms.
     primary_reports_dir = bundles[0].reports_dir
-    ids = [_sanitize_token(b.sample_id) for b in bundles]
-    name_suffix = "_vs_".join(ids[:4])
-    if len(ids) > 4:
-        name_suffix = f"{name_suffix}_and_{len(ids) - 4}_more"
+    run_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     result = {}
 
@@ -2461,13 +2476,13 @@ def make_multi_sample_group_plots_meg_qc(
         meg_shared = [t for t in meg_tabs_all
                       if any(_bundle_has_modality(b, t) for b in meg_bundles)]
         if meg_shared:
-            meg_html = _build_multi_sample_report_html(meg_bundles, meg_shared)
+            meg_html = _build_multi_sample_report_html(meg_bundles, meg_shared, modality_label="MEG")
             meg_dir = primary_reports_dir / "meg"
             meg_dir.mkdir(parents=True, exist_ok=True)
             if output_report_path is not None:
                 meg_path = Path(output_report_path).parent / "meg" / (Path(output_report_path).stem + "_meg.html")
             else:
-                meg_path = meg_dir / f"QA_multi_sample_report_{name_suffix}_meg.html"
+                meg_path = meg_dir / f"QA_multi_sample_report_{run_id}_meg.html"
             meg_path.parent.mkdir(parents=True, exist_ok=True)
             meg_path.write_text(meg_html, encoding="utf-8")
             result["meg_report"] = meg_path
@@ -2483,13 +2498,13 @@ def make_multi_sample_group_plots_meg_qc(
 
     # ── EEG multi-sample report ───────────────────────────────────────
     if len(eeg_bundles) >= 2:
-        eeg_html = _build_multi_sample_report_html(eeg_bundles, eeg_tabs_all)
+        eeg_html = _build_multi_sample_report_html(eeg_bundles, eeg_tabs_all, modality_label="EEG")
         eeg_dir = primary_reports_dir / "eeg"
         eeg_dir.mkdir(parents=True, exist_ok=True)
         if output_report_path is not None:
             eeg_path = Path(output_report_path).parent / "eeg" / (Path(output_report_path).stem + "_eeg.html")
         else:
-            eeg_path = eeg_dir / f"QA_multi_sample_report_{name_suffix}_eeg.html"
+            eeg_path = eeg_dir / f"QA_multi_sample_report_{run_id}_eeg.html"
         eeg_path.parent.mkdir(parents=True, exist_ok=True)
         eeg_path.write_text(eeg_html, encoding="utf-8")
         result["eeg_report"] = eeg_path

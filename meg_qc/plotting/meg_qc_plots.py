@@ -1966,80 +1966,23 @@ def _megqc_version() -> str:
         return "unknown"
 
 
-def _resolve_used_settings_path(config_dir: Optional[Path]) -> Optional[Path]:
-    """Locate the settings snapshot written by the calculation step.
-
-    Prefers the newest ``*UsedSettings*.ini`` snapshot saved under the analysis
-    ``config`` folder (the exact settings used for this run). Falls back to the
-    packaged default ``settings.ini`` so the tab is never empty.
-    """
-    if config_dir is not None:
-        try:
-            cfg_dir = Path(config_dir)
-            if cfg_dir.is_dir():
-                snaps = sorted(
-                    cfg_dir.glob("*UsedSettings*.ini"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                if snaps:
-                    return snaps[0]
-                any_ini = sorted(cfg_dir.glob("*.ini"), key=lambda p: p.stat().st_mtime, reverse=True)
-                if any_ini:
-                    return any_ini[0]
-        except Exception:
-            pass
-    # Package default fallback.
-    default = Path(__file__).resolve().parent.parent / "settings" / "settings.ini"
-    return default if default.exists() else None
-
-
 def _build_settings_snapshot_section(config_dir: Optional[Path]) -> str:
-    """Render an elegant, sectioned snapshot of the settings used for this run."""
-    settings_path = _resolve_used_settings_path(config_dir)
-    if settings_path is None:
-        return (
-            "<section><h2>Settings snapshot</h2>"
-            "<p>No settings file could be located for this analysis.</p></section>"
-        )
+    """Render the Settings tab via the shared snapshot renderer.
 
-    parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
-    try:
-        parser.read(settings_path, encoding="utf-8")
-    except Exception as exc:
-        return (
-            "<section><h2>Settings snapshot</h2>"
-            f"<p>Failed to parse settings file <code>{html.escape(str(settings_path))}</code>: "
-            f"{html.escape(str(exc))}</p></section>"
-        )
-
-    cards = []
-    for section in parser.sections():
-        items = list(parser.items(section))
-        if not items:
-            continue
-        rows = "".join(
-            f"<tr><td class='set-key'>{html.escape(str(k))}</td>"
-            f"<td class='set-val'>{html.escape(str(v)) if str(v).strip() else '<em>(empty)</em>'}</td></tr>"
-            for k, v in items
-        )
-        cards.append(
-            "<details class='settings-card' open>"
-            f"<summary>{html.escape(section)}</summary>"
-            f"<table class='settings-table'><tbody>{rows}</tbody></table>"
-            "</details>"
-        )
-
-    if not cards:
-        cards.append("<p>The settings file contains no sections.</p>")
-
-    return (
-        "<section class='settings-snapshot'>"
-        "<h2>Settings snapshot</h2>"
-        "<p>These are the exact parameters used to compute this report. "
-        f"Source: <code>{html.escape(settings_path.name)}</code></p>"
-        f"<div class='settings-grid'>{''.join(cards)}</div>"
-        "</section>"
+    The implementation lives in ``universal_plots`` so the subject, QA group, QC
+    group and multi-sample reports all produce the same elegant, self-contained
+    snapshot from each profile's ``*UsedSettings*.ini`` file.
+    """
+    from meg_qc.plotting.universal_plots import (
+        resolve_used_settings_path,
+        parse_ini_settings_to_sections,
+        build_settings_tab_html,
+    )
+    settings_path = resolve_used_settings_path(config_dir)
+    snapshot = parse_ini_settings_to_sections(settings_path)
+    return build_settings_tab_html(
+        [(None, snapshot)],
+        intro="These are the exact parameters used to compute this report.",
     )
 
 
@@ -2141,6 +2084,7 @@ def _build_subject_report_html(
 
     plotly_bundle_script = _inline_plotly_bundle_script()
     lazy_payload_scripts = _lazy_payload_script_tags_html()
+    from meg_qc.plotting.universal_plots import SETTINGS_TAB_CSS as settings_css
 
     return f"""
 <!DOCTYPE html>
@@ -2393,52 +2337,7 @@ def _build_subject_report_html(
     @keyframes spin {{
       to {{ transform: rotate(360deg); }}
     }}
-    .settings-snapshot .settings-grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 14px;
-      margin-top: 8px;
-    }}
-    .settings-card {{
-      border: 1px solid #d7e6f7;
-      border-radius: 12px;
-      background: #fbfdff;
-      box-shadow: 0 3px 12px rgba(7, 41, 74, 0.06);
-      overflow: hidden;
-    }}
-    .settings-card > summary {{
-      cursor: pointer;
-      list-style: none;
-      padding: 10px 14px;
-      font-weight: 700;
-      color: #0f3d6e;
-      background: linear-gradient(135deg, #eaf3ff, #f5f9ff);
-      border-bottom: 1px solid #e1edfa;
-    }}
-    .settings-card > summary::-webkit-details-marker {{ display: none; }}
-    .settings-card > summary::before {{ content: "\\25B8  "; color: #2b6cb0; }}
-    .settings-card[open] > summary::before {{ content: "\\25BE  "; }}
-    table.settings-table {{
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }}
-    table.settings-table td {{
-      padding: 6px 12px;
-      border-bottom: 1px solid #eef4fb;
-      vertical-align: top;
-    }}
-    table.settings-table td.set-key {{
-      color: #334e68;
-      font-weight: 600;
-      width: 46%;
-      word-break: break-word;
-    }}
-    table.settings-table td.set-val {{
-      color: #0b1f33;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      word-break: break-word;
-    }}
+{settings_css}
   </style>
 </head>
 <body>

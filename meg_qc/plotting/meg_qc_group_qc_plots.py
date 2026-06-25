@@ -13,7 +13,6 @@ Public entrypoint
 
 from __future__ import annotations
 
-import configparser
 import datetime as dt
 import html
 import json
@@ -98,8 +97,8 @@ class QCDatasetBundle:
     cfg_path: Optional[Path]
     attempt: Optional[int]
     df: pd.DataFrame
-    general_settings_snapshot: str
-    gqi_settings_snapshot: str
+    general_settings_snapshot: dict
+    gqi_settings_snapshot: dict
 
 
 COMPONENTS: Dict[str, List[ComponentSpec]] = {
@@ -2204,54 +2203,28 @@ def _build_subtabs_html(group_id: str, tabs: Sequence[Tuple[str, str]], *, level
     return f"<div class='subtab-group level-{lvl}'><div class='subtab-row'>{''.join(btns)}</div>{''.join(panels)}</div>"
 
 
-def _config_snapshot(cfg_path: Optional[Path]) -> str:
-    if cfg_path is None or (not cfg_path.exists()):
-        return "No attempt-matched GQI config file was found."
-    cfg = configparser.ConfigParser()
-    cfg.read(cfg_path)
-    lines = [f"source={cfg_path}"]
-    for section in cfg.sections():
-        lines.append(f"[{section}]")
-        for key, value in cfg[section].items():
-            lines.append(f"  {key}={value}")
-        lines.append("")
-    return "\n".join(lines)
+def _config_snapshot(cfg_path: Optional[Path]) -> dict:
+    """Structured snapshot of the attempt-matched GQI config (full QC view).
+
+    Uses the shared parser so the QC report renders the same elegant card view
+    as every other report, parsing whatever sections exist in the file.
+    """
+    from meg_qc.plotting.universal_plots import parse_ini_settings_to_sections
+    return parse_ini_settings_to_sections(cfg_path)
 
 
-def _general_settings_snapshot(megqc_root: str) -> str:
-    """Load the latest general MEGqc settings ini (same source used by QA report)."""
-    config_dir = Path(megqc_root) / "config"
-    ini_files = sorted(config_dir.glob("*.ini"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not ini_files:
-        return "No general MEGqc settings ini was found."
+def _general_settings_snapshot(megqc_root: str) -> dict:
+    """Structured, QA-safe snapshot of the general MEGqc settings ini.
 
-    chosen = ini_files[0]
-    cfg = configparser.ConfigParser()
-    cfg.read(chosen)
-
-    lines = [f"source={chosen}"]
-    disallowed_tokens = ("bad", "good", "reject", "flag", "exceed", "pass", "fail", "threshold")
-    sections = ["default", "Filtering", "Epoching", "STD", "PTP_manual", "PSD", "ECG", "EOG", "Muscle"]
-    for section in sections:
-        if section not in cfg:
-            continue
-        safe_items: List[str] = []
-        for key, value in cfg[section].items():
-            key_l = key.lower()
-            val_l = str(value).lower()
-            if any(tok in key_l for tok in disallowed_tokens):
-                continue
-            if any(tok in val_l for tok in disallowed_tokens):
-                continue
-            safe_items.append(f"{key}={value}")
-        if safe_items:
-            lines.append(f"[{section}]")
-            for item in safe_items:
-                lines.append(f"  {item}")
-            lines.append("")
-        else:
-            lines.append(f"[{section}] QA-safe settings view active")
-    return "\n".join(lines)
+    Same source the QA report uses; QC-threshold keys stay hidden from this view.
+    """
+    from meg_qc.plotting.universal_plots import (
+        resolve_used_settings_path,
+        parse_ini_settings_to_sections,
+        QA_DISALLOWED_TOKENS,
+    )
+    settings_path = resolve_used_settings_path(Path(megqc_root) / "config")
+    return parse_ini_settings_to_sections(settings_path, disallowed_tokens=QA_DISALLOWED_TOKENS)
 
 
 # ---------------------------------------------------------------------------
@@ -2585,8 +2558,6 @@ def _build_summary_distributions_section_qc(df: pd.DataFrame, *, view: str, view
 def _tab_content(
     df: pd.DataFrame,
     top_tab: str,
-    general_settings_snapshots: Dict[str, str],
-    gqi_settings_snapshots: Dict[str, str],
 ) -> str:
     if top_tab == "Combined (mag+grad)":
         view = "combined"
@@ -2622,30 +2593,12 @@ def _tab_content(
         if c
     })
 
-    snapshot_tiles: List[str] = []
-    for ds_name in sorted(general_settings_snapshots):
-        snapshot_tiles.append(
-            "<div class='tile'>"
-            f"<h3>General MEEGqc settings snapshot ({html.escape(ds_name)})</h3>"
-            f"<pre>{html.escape(general_settings_snapshots[ds_name])}</pre>"
-            "</div>"
-        )
-    for ds_name in sorted(gqi_settings_snapshots):
-        snapshot_tiles.append(
-            "<div class='tile'>"
-            f"<h3>GQI attempt settings snapshot ({html.escape(ds_name)})</h3>"
-            f"<pre>{html.escape(gqi_settings_snapshots[ds_name])}</pre>"
-            "</div>"
-        )
-
     overview_html = (
         "<section>"
         "<h2>Cohort QC overview</h2>"
-        "<p><strong>Purpose:</strong> summarize QC percentages and burdens for the selected channel-type view before diving into per-metric panels.</p>"
+        "<p><strong>Purpose:</strong> summarize QC percentages and burdens for the selected channel-type view before diving into per-metric panels. "
+        "The settings snapshots and machine-readable inputs are gathered in the dedicated <em>Settings</em> tab.</p>"
         + _summary_table_html(df, selected_cols)
-        + "<div class='summary-grid'>"
-        + "".join(snapshot_tiles)
-        + "</div>"
         + "</section>"
     )
 
@@ -2678,10 +2631,11 @@ def _build_report_html(
     df: pd.DataFrame,
     source_rows: Sequence[str],
     attempt_text: str,
-    general_settings_snapshots: Dict[str, str],
-    gqi_settings_snapshots: Dict[str, str],
+    general_settings_snapshots: Dict[str, dict],
+    gqi_settings_snapshots: Dict[str, dict],
     allowed_tabs: Optional[Sequence[str]] = None,
 ) -> str:
+    from meg_qc.plotting.universal_plots import build_settings_tab_html, SETTINGS_TAB_CSS as settings_css
     _reset_lazy_figure_store()
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version = getattr(meg_qc, "__version__", "unknown")
@@ -2719,11 +2673,28 @@ def _build_report_html(
         active = " active" if idx == 0 else ""
         tab_buttons.append(f"<button class='tab-btn{active}' data-target='{tab_id}'>{top_tab}</button>")
         tab_panels.append(
-            f"<div id='{tab_id}' class='tab-content{active}'>{_tab_content(df, top_tab, general_settings_snapshots, gqi_settings_snapshots)}</div>"
+            f"<div id='{tab_id}' class='tab-content{active}'>{_tab_content(df, top_tab)}</div>"
         )
 
+    # Dedicated Settings tab: general + GQI snapshots per dataset, plus the
+    # machine-readable input subsection (moved out of the page body so it never
+    # overflows its box).
+    settings_pairs = []
+    for ds_name in sorted(general_settings_snapshots):
+        settings_pairs.append((f"General settings — {ds_name}", general_settings_snapshots[ds_name]))
+    for ds_name in sorted(gqi_settings_snapshots):
+        settings_pairs.append((f"GQI attempt settings — {ds_name}", gqi_settings_snapshots[ds_name]))
+    settings_tab_id = f"qc-top-tab-{len(active_tabs)}"
+    settings_content = build_settings_tab_html(
+        settings_pairs,
+        intro="General MEEGqc settings (QA-safe) and the GQI attempt configuration used for this QC report.",
+        machine_readable_rows=list(source_rows),
+        machine_readable_intro="QC TSV derivatives and config files consumed to build this report.",
+    )
+    tab_buttons.append(f"<button class='tab-btn' data-target='{settings_tab_id}'>Settings</button>")
+    tab_panels.append(f"<div id='{settings_tab_id}' class='tab-content'>{settings_content}</div>")
+
     lazy_payload_scripts = _lazy_payload_script_tags_html()
-    sources_html = "".join(f"<li>{html.escape(line)}</li>" for line in source_rows)
 
     return f"""
 <!DOCTYPE html>
@@ -2960,6 +2931,7 @@ def _build_report_html(
     .loading-title {{ font-weight: 700; color: #1e3a5f; margin-bottom: 4px; }}
     .loading-subtitle {{ color: #334e68; font-size: 13px; }}
     @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+{settings_css}
   </style>
 </head>
 <body>
@@ -2988,12 +2960,6 @@ def _build_report_html(
         {''.join(tab_buttons)}
       </div>
       {''.join(tab_panels)}
-      <section>
-        <h2>Machine-readable input</h2>
-        <ul>
-          {sources_html}
-        </ul>
-      </section>
     </section>
   </main>
   {lazy_payload_scripts}
@@ -3618,15 +3584,27 @@ def make_group_qc_plots_multi_meg_qc(
             print(f"___MEGqc___:   {b.dataset_name} -> {b.tsv_path}")
 
     # ── Per-modality separate HTML reports ──────────────────────────────
-    _common_kw = dict(
-        source_rows=source_rows,
-        attempt_text=attempt_text,
-        general_settings_snapshots=general_snapshots,
-        gqi_settings_snapshots=gqi_snapshots,
-    )
     base_dir = bundles[0].reports_dir
-    suffix = f"_attempt_{attempt}" if attempt is not None else ""
-    safe_name = "_".join(names)
+    # Generic filename (no dataset list — long names break some file systems)
+    # plus the GQI attempt and a unique run id so repeated runs never collide
+    # and names are identical across operating systems.
+    attempt_suffix = f"_attempt_{attempt}" if attempt is not None else ""
+    run_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _modality_subset(modality_df):
+        """Restrict title/sources/snapshots to the datasets actually present in
+        this modality, so a MEG report never lists EEG-only datasets (and vice
+        versa)."""
+        if "dataset" in modality_df.columns:
+            present = set(modality_df["dataset"].astype(str).unique())
+        else:
+            present = set(names)
+        sub_names = [n for n in names if n in present] or list(names)
+        sub_report_name = " + ".join(sub_names)
+        sub_source_rows = [r for r in source_rows if any(r.startswith(f"{n}:") for n in sub_names)]
+        sub_general = {k: v for k, v in general_snapshots.items() if k in present}
+        sub_gqi = {k: v for k, v in gqi_snapshots.items() if k in present}
+        return sub_report_name, sub_source_rows, sub_general, sub_gqi
 
     # Use BIDS modality column for authoritative MEG/EEG classification.
     # _has_modality checks the 'modality' column set from TSV subfolder/filename,
@@ -3634,13 +3612,16 @@ def make_group_qc_plots_multi_meg_qc(
     has_meg = _has_modality(df_all, "meg")
     if has_meg:
         meg_df = _filter_by_modality(df_all, "meg")
+        meg_name, meg_src, meg_gen, meg_gqi = _modality_subset(meg_df)
         meg_html = _build_report_html(
-            report_name=report_name, df=meg_df,
-            allowed_tabs=["Combined (mag+grad)", "MAG", "GRAD"], **_common_kw,
+            report_name=meg_name, df=meg_df,
+            source_rows=meg_src, attempt_text=attempt_text,
+            general_settings_snapshots=meg_gen, gqi_settings_snapshots=meg_gqi,
+            allowed_tabs=["Combined (mag+grad)", "MAG", "GRAD"],
         )
         meg_dir = base_dir / "meg"
         meg_dir.mkdir(parents=True, exist_ok=True)
-        meg_path = meg_dir / f"QC_group_report_multi_{safe_name}{suffix}_meg.html"
+        meg_path = meg_dir / f"QC_group_report_multi{attempt_suffix}_{run_id}_meg.html"
         meg_path.write_text(meg_html, encoding="utf-8")
         print(f"___MEGqc___:   MEG QC multi report: {meg_path}")
         if out_path is None:
@@ -3649,13 +3630,16 @@ def make_group_qc_plots_multi_meg_qc(
     has_eeg = _has_modality(df_all, "eeg")
     if has_eeg:
         eeg_df = _filter_by_modality(df_all, "eeg")
+        eeg_name, eeg_src, eeg_gen, eeg_gqi = _modality_subset(eeg_df)
         eeg_html = _build_report_html(
-            report_name=report_name, df=eeg_df,
-            allowed_tabs=["EEG"], **_common_kw,
+            report_name=eeg_name, df=eeg_df,
+            source_rows=eeg_src, attempt_text=attempt_text,
+            general_settings_snapshots=eeg_gen, gqi_settings_snapshots=eeg_gqi,
+            allowed_tabs=["EEG"],
         )
         eeg_dir = base_dir / "eeg"
         eeg_dir.mkdir(parents=True, exist_ok=True)
-        eeg_path = eeg_dir / f"QC_group_report_multi_{safe_name}{suffix}_eeg.html"
+        eeg_path = eeg_dir / f"QC_group_report_multi{attempt_suffix}_{run_id}_eeg.html"
         eeg_path.write_text(eeg_html, encoding="utf-8")
         print(f"___MEGqc___:   EEG QC multi report: {eeg_path}")
         if out_path is None:

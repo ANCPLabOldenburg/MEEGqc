@@ -91,36 +91,6 @@ sys.path.append(os.path.join('..', '..', 'meg_qc', 'calculation'))
 sys.path.append(os.path.join('..', '..', '..', 'meg_qc', 'calculation'))
 sys.path.append(os.path.join('..', '..', '..', '..', 'meg_qc', 'calculation'))
 
-
-# ---------------------------------------------------------------------------
-# Windows joblib/loky worker import fix (notably Python 3.14 bundled runtimes)
-# ---------------------------------------------------------------------------
-# joblib's loky backend starts every worker as a brand-new interpreter, e.g.
-#   python.exe -c "from joblib.externals.loky.backend.popen_loky_win32 import main; main(...)"
-# That bare ``-c`` interpreter only sees PYTHONPATH plus its built-in defaults
-# at startup — i.e. *before* loky restores the parent's sys.path — so the very
-# first import fails if joblib's site-packages is not already on the default
-# path. The bundled Python 3.14 Windows runtime (the installer's AppData
-# runtime) no longer auto-adds site-packages for such ``-c`` subprocesses the
-# way 3.10–3.13 did, so the worker dies with:
-#   ModuleNotFoundError: No module named 'joblib'
-# Propagating this process's real import locations through PYTHONPATH (read at
-# interpreter startup) makes every spawned worker inherit them. This is a no-op
-# on standard installs where site-packages is already on the default path, and
-# is intentionally limited to Windows where the spawn-based loky workers run.
-if sys.platform == "win32":
-    _worker_import_paths = [p for p in sys.path if p and os.path.isdir(p)]
-    _existing_pythonpath = os.environ.get("PYTHONPATH", "")
-    _existing_pythonpath_parts = (
-        _existing_pythonpath.split(os.pathsep) if _existing_pythonpath else []
-    )
-    # Keep this process's paths first, preserve any pre-set PYTHONPATH, dedupe.
-    _merged_pythonpath = list(
-        dict.fromkeys(_worker_import_paths + _existing_pythonpath_parts)
-    )
-    if _merged_pythonpath:
-        os.environ["PYTHONPATH"] = os.pathsep.join(_merged_pythonpath)
-
 from meg_qc.calculation.initial_meg_qc import (
     delete_temp_folder,
     get_all_config_params,

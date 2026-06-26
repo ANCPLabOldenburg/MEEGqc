@@ -2465,7 +2465,7 @@ def make_multi_dataset_plots_meg_qc(
     # systems) and carry a unique run id so repeated runs never collide and the
     # name is identical across platforms.
     primary_reports_dir = bundles[0].reports_dir
-    run_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = dt.datetime.now().strftime("Date%Y%m%dTime%H%M%S")
 
     result = {}
 
@@ -2482,7 +2482,7 @@ def make_multi_dataset_plots_meg_qc(
             if output_report_path is not None:
                 meg_path = Path(output_report_path).parent / "meg" / (Path(output_report_path).stem + "_meg.html")
             else:
-                meg_path = meg_dir / f"QA_multi_dataset_report_{run_id}_meg.html"
+                meg_path = meg_dir / f"desc-multiDatasetQaReport{run_id}_meg.html"
             meg_path.parent.mkdir(parents=True, exist_ok=True)
             meg_path.write_text(meg_html, encoding="utf-8")
             result["meg_report"] = meg_path
@@ -2504,7 +2504,7 @@ def make_multi_dataset_plots_meg_qc(
         if output_report_path is not None:
             eeg_path = Path(output_report_path).parent / "eeg" / (Path(output_report_path).stem + "_eeg.html")
         else:
-            eeg_path = eeg_dir / f"QA_multi_dataset_report_{run_id}_eeg.html"
+            eeg_path = eeg_dir / f"desc-multiDatasetQaReport{run_id}_eeg.html"
         eeg_path.parent.mkdir(parents=True, exist_ok=True)
         eeg_path.write_text(eeg_html, encoding="utf-8")
         result["eeg_report"] = eeg_path

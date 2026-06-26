@@ -3459,7 +3459,7 @@ def make_dataset_qc_plots_meg_qc(
         general_settings_snapshots={bundle.dataset_name: bundle.general_settings_snapshot},
         gqi_settings_snapshots={bundle.dataset_name: bundle.gqi_settings_snapshot},
     )
-    _sfx = f"_attempt_{bundle.attempt}" if bundle.attempt is not None else ""
+    _sfx = f"Attempt{bundle.attempt}" if bundle.attempt is not None else ""
 
     # MEG-only report (Combined+MAG+GRAD) — only if this dataset has MEG recordings.
     # _has_modality uses the BIDS 'modality' column (set from TSV subfolder/filename)
@@ -3473,7 +3473,7 @@ def make_dataset_qc_plots_meg_qc(
         )
         meg_dir = bundle.reports_dir / "meg"
         meg_dir.mkdir(parents=True, exist_ok=True)
-        meg_path = meg_dir / f"QC_dataset_report_{bundle.dataset_name}{_sfx}_meg.html"
+        meg_path = meg_dir / f"desc-datasetQcReport{_sfx}_meg.html"
         meg_path.write_text(meg_html, encoding="utf-8")
         print(f"___MEGqc___:   MEG QC report: {meg_path}")
 
@@ -3487,7 +3487,7 @@ def make_dataset_qc_plots_meg_qc(
         )
         eeg_dir = bundle.reports_dir / "eeg"
         eeg_dir.mkdir(parents=True, exist_ok=True)
-        eeg_path = eeg_dir / f"QC_dataset_report_{bundle.dataset_name}{_sfx}_eeg.html"
+        eeg_path = eeg_dir / f"desc-datasetQcReport{_sfx}_eeg.html"
         eeg_path.write_text(eeg_html, encoding="utf-8")
         print(f"___MEGqc___:   EEG QC report: {eeg_path}")
 
@@ -3495,9 +3495,9 @@ def make_dataset_qc_plots_meg_qc(
         return out_path
     # Return primary per-modality path
     if has_meg:
-        return bundle.reports_dir / "meg" / f"QC_dataset_report_{bundle.dataset_name}{_sfx}_meg.html"
+        return bundle.reports_dir / "meg" / f"desc-datasetQcReport{_sfx}_meg.html"
     if has_eeg:
-        return bundle.reports_dir / "eeg" / f"QC_dataset_report_{bundle.dataset_name}{_sfx}_eeg.html"
+        return bundle.reports_dir / "eeg" / f"desc-datasetQcReport{_sfx}_eeg.html"
     return None
 
 
@@ -3571,8 +3571,8 @@ def make_dataset_qc_plots_multi_meg_qc(
     # Generic filename (no dataset list — long names break some file systems)
     # plus the GQI attempt and a unique run id so repeated runs never collide
     # and names are identical across operating systems.
-    attempt_suffix = f"_attempt_{attempt}" if attempt is not None else ""
-    run_id = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    attempt_suffix = f"Attempt{attempt}" if attempt is not None else ""
+    run_id = dt.datetime.now().strftime("Date%Y%m%dTime%H%M%S")
 
     def _modality_subset(modality_df):
         """Restrict title/sources/snapshots to the datasets actually present in
@@ -3604,7 +3604,7 @@ def make_dataset_qc_plots_multi_meg_qc(
         )
         meg_dir = base_dir / "meg"
         meg_dir.mkdir(parents=True, exist_ok=True)
-        meg_path = meg_dir / f"QC_dataset_report_multi{attempt_suffix}_{run_id}_meg.html"
+        meg_path = meg_dir / f"desc-multiDatasetQcReport{attempt_suffix}{run_id}_meg.html"
         meg_path.write_text(meg_html, encoding="utf-8")
         print(f"___MEGqc___:   MEG QC multi report: {meg_path}")
         if out_path is None:
@@ -3622,7 +3622,7 @@ def make_dataset_qc_plots_multi_meg_qc(
         )
         eeg_dir = base_dir / "eeg"
         eeg_dir.mkdir(parents=True, exist_ok=True)
-        eeg_path = eeg_dir / f"QC_dataset_report_multi{attempt_suffix}_{run_id}_eeg.html"
+        eeg_path = eeg_dir / f"desc-multiDatasetQcReport{attempt_suffix}{run_id}_eeg.html"
         eeg_path.write_text(eeg_html, encoding="utf-8")
         print(f"___MEGqc___:   EEG QC multi report: {eeg_path}")
         if out_path is None:

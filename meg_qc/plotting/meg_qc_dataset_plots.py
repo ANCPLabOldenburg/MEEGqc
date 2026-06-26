@@ -8065,7 +8065,7 @@ def make_dataset_plots_meg_qc(
         )
         meg_report_dir = reports_dir / "meg"
         meg_report_dir.mkdir(parents=True, exist_ok=True)
-        meg_path = meg_report_dir / f"QA_dataset_report_{dataset_name}_meg.html"
+        meg_path = meg_report_dir / f"desc-datasetQaReport_meg.html"
         meg_path.write_text(meg_html, encoding="utf-8")
         print(f"___MEGqc___:   MEG report: {meg_path}")
 
@@ -8079,7 +8079,7 @@ def make_dataset_plots_meg_qc(
         )
         eeg_report_dir = reports_dir / "eeg"
         eeg_report_dir.mkdir(parents=True, exist_ok=True)
-        eeg_path = eeg_report_dir / f"QA_dataset_report_{dataset_name}_eeg.html"
+        eeg_path = eeg_report_dir / f"desc-datasetQaReport_eeg.html"
         eeg_path.write_text(eeg_html, encoding="utf-8")
         print(f"___MEGqc___:   EEG report: {eeg_path}")
 
@@ -8087,8 +8087,8 @@ def make_dataset_plots_meg_qc(
     meg_accs_check = {k: v for k, v in tab_accumulators.items()
                       if k in ("Combined (mag+grad)", "MAG", "GRAD")}
     if any(acc.run_count > 0 for acc in meg_accs_check.values()):
-        primary_path = reports_dir / "meg" / f"QA_dataset_report_{dataset_name}_meg.html"
+        primary_path = reports_dir / "meg" / f"desc-datasetQaReport_meg.html"
     else:
-        primary_path = reports_dir / "eeg" / f"QA_dataset_report_{dataset_name}_eeg.html"
+        primary_path = reports_dir / "eeg" / f"desc-datasetQaReport_eeg.html"
 
     return {"report": primary_path}

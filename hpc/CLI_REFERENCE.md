@@ -20,7 +20,7 @@ All commands work unmodified on any Linux HPC scheduler (Slurm, PBS, SGE, bare-m
 | `./outputs` | `/mnt_OUT` | Output derivatives (external, keeps source dataset clean) |
 
 > **Tip:** without `--derivatives_output` the results land inside the BIDS
-> dataset at `<dataset>/derivatives/Meg_QC/`. Using `--derivatives_output`
+> dataset at `<dataset>/derivatives/MEEGqc/`. Using `--derivatives_output`
 > (mapped to `/mnt_OUT`) keeps the source dataset untouched — recommended on CBRAIN.
 
 ---
@@ -67,7 +67,7 @@ apptainer run \
 ```
 
 The analysis profile ID is auto-generated (`YYYYMMDD_HHMMSS`).
-Results: `outputs/mnt_IN/derivatives/Meg_QC/profiles/<analysis_id>/`
+Results: `outputs/mnt_IN/derivatives/MEEGqc/profiles/<analysis_id>/`
 
 ---
 
@@ -243,7 +243,7 @@ apptainer exec \
   --qa-subject
 ```
 
-### Group reports only
+### Dataset reports only
 
 ```bash
 apptainer exec \
@@ -255,10 +255,10 @@ apptainer exec \
   --inputdata /mnt_IN \
   --derivatives_output /mnt_OUT \
   --analysis_mode latest \
-  --qa-group
+  --qa-dataset
 ```
 
-### QC group and multisample reports
+### QC dataset and multi-dataset reports
 
 ```bash
 apptainer exec \
@@ -270,7 +270,7 @@ apptainer exec \
   --inputdata /mnt_IN \
   --derivatives_output /mnt_OUT \
   --analysis_mode latest \
-  --qc-group --qc-multisample
+  --qc-dataset --qc-multi-dataset
 ```
 
 ---
@@ -296,12 +296,12 @@ apptainer exec \
 | Flag | Scope | Reports generated |
 |------|-------|-------------------|
 | `--qa-subject` | Per subject | Subject-level HTML reports |
-| `--qa-group` | Per dataset | Group-level QA summary |
-| `--qa-multisample` | Across datasets | Cross-dataset QA (2+ datasets required) |
-| `--qa-all` | All QA | Subject + Group + Multisample |
-| `--qc-group` | Per dataset | Group-level QC summary |
-| `--qc-multisample` | Across datasets | Cross-dataset QC (2+ datasets required) |
-| `--qc-all` | All QC | Group + Multisample |
+| `--qa-dataset` | Per dataset | Dataset-level QA summary |
+| `--qa-multi-dataset` | Across datasets | Cross-dataset QA (2+ datasets required) |
+| `--qa-all` | All QA | Subject + Dataset + Multi-dataset |
+| `--qc-dataset` | Per dataset | Dataset-level QC summary |
+| `--qc-multi-dataset` | Across datasets | Cross-dataset QC (2+ datasets required) |
+| `--qc-all` | All QC | Dataset + Multi-dataset |
 | `--all` | Everything | All QA + all QC |
 
 > Add `--run-all` to `run-megqc` to invoke plotting immediately after

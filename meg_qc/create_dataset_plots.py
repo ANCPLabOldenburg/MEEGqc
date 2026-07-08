@@ -1,12 +1,12 @@
-"""Command-line helper to run dataset-level QA group plotting."""
+"""Command-line helper to run dataset-level QA plotting."""
 
 import argparse
 
 from meg_qc.calculation.meg_qc_pipeline import resolve_output_roots
-from meg_qc.plotting.meg_qc_group_plots import make_group_plots_meg_qc
+from meg_qc.plotting.meg_qc_dataset_plots import make_dataset_plots_meg_qc
 
 
-def get_group_plots() -> None:
+def get_dataset_plots() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run MEGqc dataset-level QA plotting: --inputdata <BIDS ds> "
@@ -44,7 +44,7 @@ def get_group_plots() -> None:
     _, derivatives_root = resolve_output_roots(data_directory, derivatives_base)
     print(f"___MEGqc___: Reading derivatives from: {derivatives_root}")
 
-    out = make_group_plots_meg_qc(
+    out = make_dataset_plots_meg_qc(
         data_directory,
         derivatives_base=derivatives_base,
         n_jobs=args.njobs,
@@ -54,4 +54,4 @@ def get_group_plots() -> None:
 
 
 if __name__ == "__main__":
-    get_group_plots()
+    get_dataset_plots()

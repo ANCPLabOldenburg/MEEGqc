@@ -246,8 +246,9 @@ from PyQt6.QtCore import (
     QSettings,
     QTimer,
     QStandardPaths,
+    QUrl,
 )
-from PyQt6.QtGui import QPixmap, QIcon, QPalette, QColor
+from PyQt6.QtGui import QPixmap, QIcon, QPalette, QColor, QDesktopServices
 
 # Core MEG QC pipeline functions
 from meg_qc.test import (
@@ -643,6 +644,14 @@ class SettingsEditorDialog(QDialog):
         ("Filtering", "downsample_to_hz"),
     }
 
+    # Parameters that are conceptually decimal but ship a whole-number default, so the
+    # value-sniffing logic below would otherwise render them as an integer-only spin
+    # box and block the decimal point. Listing a key here forces a decimal spin box.
+    # epoch_tmax defaults to 1 yet represents a time in seconds (e.g. 1.5).
+    _FLOAT_KEYS = {
+        ("Epoching", "epoch_tmax"),
+    }
+
     def __init__(self, source_path: Union[str, Path], defaults_path: Union[str, Path], title: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -874,16 +883,20 @@ class SettingsEditorDialog(QDialog):
             line.setMaximumWidth(215)
             return line, "text"
 
-        try:
-            ival = int(val)
-            spin = QSpinBox()
-            spin.setRange(-1_000_000_000, 1_000_000_000)
-            spin.setValue(ival)
-            spin.setMinimumWidth(145)
-            spin.setMaximumWidth(215)
-            return spin, "int"
-        except Exception:
-            pass
+        # Force a decimal spin box for keys that represent a fractional quantity but
+        # ship a whole-number default (e.g. epoch_tmax = 1). Skipping the integer
+        # branch is what lets the user type a decimal point.
+        if sec_key not in self._FLOAT_KEYS:
+            try:
+                ival = int(val)
+                spin = QSpinBox()
+                spin.setRange(-1_000_000_000, 1_000_000_000)
+                spin.setValue(ival)
+                spin.setMinimumWidth(145)
+                spin.setMaximumWidth(215)
+                return spin, "int"
+            except Exception:
+                pass
 
         try:
             fval = float(val)
@@ -2008,20 +2021,20 @@ class MainWindow(QMainWindow):
         plot_form = QFormLayout(plot_box)
 
         self.chk_qa_subject = QCheckBox("QA subject reports")
-        self.chk_qa_group = QCheckBox("QA group reports")
-        self.chk_qa_multisample = QCheckBox("QA multisample report")
-        self.chk_qc_group = QCheckBox("QC group report(s)")
-        self.chk_qc_multisample = QCheckBox("QC multisample report")
+        self.chk_qa_dataset = QCheckBox("QA dataset reports")
+        self.chk_qa_multi_dataset = QCheckBox("QA multi-dataset report")
+        self.chk_qc_dataset = QCheckBox("QC dataset report(s)")
+        self.chk_qc_multi_dataset = QCheckBox("QC multi-dataset report")
         self.chk_qa_subject.setChecked(True)
 
         mode_row = QWidget()
         mode_lay = QVBoxLayout(mode_row)
         mode_lay.setContentsMargins(0, 0, 0, 0)
         mode_lay.addWidget(self.chk_qa_subject)
-        mode_lay.addWidget(self.chk_qa_group)
-        mode_lay.addWidget(self.chk_qa_multisample)
-        mode_lay.addWidget(self.chk_qc_group)
-        mode_lay.addWidget(self.chk_qc_multisample)
+        mode_lay.addWidget(self.chk_qa_dataset)
+        mode_lay.addWidget(self.chk_qa_multi_dataset)
+        mode_lay.addWidget(self.chk_qc_dataset)
+        mode_lay.addWidget(self.chk_qc_multi_dataset)
         plot_form.addRow("Modes:", mode_row)
 
         preset_row = QWidget()
@@ -2053,7 +2066,7 @@ class MainWindow(QMainWindow):
         plot_form.addRow("Plotting n_jobs:", self.plot_jobs)
 
         self.plot_input_tsv = QLineEdit()
-        self.plot_input_tsv.setPlaceholderText("Optional: Global_Quality_Index_attempt_*.tsv")
+        self.plot_input_tsv.setPlaceholderText("Optional: desc-GlobalQualityIndexAttempt*_*.tsv")
         btn_input_tsv = QPushButton("Browse")
         btn_input_tsv.clicked.connect(self._browse_plot_input_tsv)
         tsv_row = QWidget()
@@ -2076,10 +2089,10 @@ class MainWindow(QMainWindow):
 
         for chk in [
             self.chk_qa_subject,
-            self.chk_qa_group,
-            self.chk_qa_multisample,
-            self.chk_qc_group,
-            self.chk_qc_multisample,
+            self.chk_qa_dataset,
+            self.chk_qa_multi_dataset,
+            self.chk_qc_dataset,
+            self.chk_qc_multi_dataset,
         ]:
             chk.toggled.connect(self._update_plot_form_state)
 
@@ -2181,8 +2194,14 @@ class MainWindow(QMainWindow):
         self.btn_check_updates.clicked.connect(
             lambda: check_for_updates_interactive(self, self.btn_check_updates)
         )
+        self.btn_version_notes = QPushButton("Version notes")
+        self.btn_version_notes.setToolTip(
+            "Open the online version notes (what changed in each release)."
+        )
+        self.btn_version_notes.clicked.connect(self._open_version_notes)
         bottom_lay.addWidget(self.lbl_version)
         bottom_lay.addWidget(self.btn_check_updates)
+        bottom_lay.addWidget(self.btn_version_notes)
         bottom_lay.addStretch(1)
         self.btn_qc_viewer = QPushButton("QC Viewer")
         self.btn_qc_viewer.setToolTip("Open the integrated QC data & report viewer.")
@@ -2530,8 +2549,8 @@ class MainWindow(QMainWindow):
             self.cmb_analysis_mode.setCurrentText("reuse")
             self._log(f"Selected profile: {picked}")
 
-    def _validate_multisample_profile_compatibility(self, mode, analysis_id, *, qa_multisample, qc_multisample, require_existing_profiles=True) -> bool:
-        if not (qa_multisample or qc_multisample):
+    def _validate_multi_dataset_profile_compatibility(self, mode, analysis_id, *, qa_multi_dataset, qc_multi_dataset, require_existing_profiles=True) -> bool:
+        if not (qa_multi_dataset or qc_multi_dataset):
             return True
         if mode == "legacy":
             return True
@@ -2667,50 +2686,50 @@ class MainWindow(QMainWindow):
             overrides[item.text()] = parsed if parsed else "all"
         return overrides or None
 
-    def _set_plot_modes(self, *, qa_subject, qa_group, qa_multisample, qc_group, qc_multisample):
+    def _set_plot_modes(self, *, qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset):
         self.chk_qa_subject.setChecked(qa_subject)
-        self.chk_qa_group.setChecked(qa_group)
-        self.chk_qa_multisample.setChecked(qa_multisample)
-        self.chk_qc_group.setChecked(qc_group)
-        self.chk_qc_multisample.setChecked(qc_multisample)
+        self.chk_qa_dataset.setChecked(qa_dataset)
+        self.chk_qa_multi_dataset.setChecked(qa_multi_dataset)
+        self.chk_qc_dataset.setChecked(qc_dataset)
+        self.chk_qc_multi_dataset.setChecked(qc_multi_dataset)
         self._update_plot_form_state()
 
     def _set_plot_preset_qa(self):
-        self._set_plot_modes(qa_subject=True, qa_group=True, qa_multisample=True, qc_group=False, qc_multisample=False)
+        self._set_plot_modes(qa_subject=True, qa_dataset=True, qa_multi_dataset=True, qc_dataset=False, qc_multi_dataset=False)
 
     def _set_plot_preset_qc(self):
-        self._set_plot_modes(qa_subject=False, qa_group=False, qa_multisample=False, qc_group=True, qc_multisample=True)
+        self._set_plot_modes(qa_subject=False, qa_dataset=False, qa_multi_dataset=False, qc_dataset=True, qc_multi_dataset=True)
 
     def _set_plot_preset_all(self):
-        self._set_plot_modes(qa_subject=True, qa_group=True, qa_multisample=True, qc_group=True, qc_multisample=True)
+        self._set_plot_modes(qa_subject=True, qa_dataset=True, qa_multi_dataset=True, qc_dataset=True, qc_multi_dataset=True)
 
     def _clear_plot_modes(self):
-        self._set_plot_modes(qa_subject=False, qa_group=False, qa_multisample=False, qc_group=False, qc_multisample=False)
+        self._set_plot_modes(qa_subject=False, qa_dataset=False, qa_multi_dataset=False, qc_dataset=False, qc_multi_dataset=False)
 
     def _update_plot_form_state(self):
         dataset_count = len(self._collect_dataset_paths())
-        allow_multisample = dataset_count >= 2
-        for chk in [self.chk_qa_multisample, self.chk_qc_multisample]:
-            if not allow_multisample and chk.isChecked():
+        allow_multi_dataset = dataset_count >= 2
+        for chk in [self.chk_qa_multi_dataset, self.chk_qc_multi_dataset]:
+            if not allow_multi_dataset and chk.isChecked():
                 chk.blockSignals(True)
                 chk.setChecked(False)
                 chk.blockSignals(False)
-            chk.setEnabled(allow_multisample)
+            chk.setEnabled(allow_multi_dataset)
         qa_subject_selected = self.chk_qa_subject.isChecked()
-        qa_group_selected = self.chk_qa_group.isChecked()
-        qa_multisample_selected = self.chk_qa_multisample.isChecked()
-        qc_group_selected = self.chk_qc_group.isChecked()
-        qc_multisample_selected = self.chk_qc_multisample.isChecked()
-        input_tsv_allowed = qc_group_selected and dataset_count == 1 and not qc_multisample_selected
+        qa_dataset_selected = self.chk_qa_dataset.isChecked()
+        qa_multi_dataset_selected = self.chk_qa_multi_dataset.isChecked()
+        qc_dataset_selected = self.chk_qc_dataset.isChecked()
+        qc_multi_dataset_selected = self.chk_qc_multi_dataset.isChecked()
+        input_tsv_allowed = qc_dataset_selected and dataset_count == 1 and not qc_multi_dataset_selected
         self.plot_input_tsv.setEnabled(input_tsv_allowed)
         if not input_tsv_allowed:
             self.plot_input_tsv.clear()
-        attempt_allowed = qc_group_selected or qc_multisample_selected
+        attempt_allowed = qc_dataset_selected or qc_multi_dataset_selected
         self.plot_attempt.setEnabled(attempt_allowed)
         if not attempt_allowed:
             self.plot_attempt.setValue(0)
-        mode_count = sum(1 for s in [qa_subject_selected, qa_group_selected, qa_multisample_selected, qc_group_selected, qc_multisample_selected] if s)
-        output_allowed = mode_count == 1 and (qa_multisample_selected or qc_multisample_selected or (qc_group_selected and dataset_count == 1))
+        mode_count = sum(1 for s in [qa_subject_selected, qa_dataset_selected, qa_multi_dataset_selected, qc_dataset_selected, qc_multi_dataset_selected] if s)
+        output_allowed = mode_count == 1 and (qa_multi_dataset_selected or qc_multi_dataset_selected or (qc_dataset_selected and dataset_count == 1))
         self.plot_output_report.setEnabled(output_allowed)
         if not output_allowed:
             self.plot_output_report.clear()
@@ -2790,37 +2809,51 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Plotting", "Please add at least one dataset.")
             return
         derivatives_dir = self.derivatives_dir.text().strip() or None
+        # Block reporting on derivatives produced by an older, pre-BIDS-rename
+        # MEEGqc version (old 'Meg_QC' folder / non-BIDS metric names).
+        from meg_qc.calculation.meg_qc_pipeline import (
+            has_only_legacy_derivatives,
+            LEGACY_DERIVATIVES_HINT,
+        )
+        legacy_only = [d for d in dataset_paths if has_only_legacy_derivatives(d, derivatives_dir)]
+        if legacy_only:
+            QMessageBox.warning(
+                self,
+                "Incompatible derivatives",
+                LEGACY_DERIVATIVES_HINT + "\n\nAffected datasets:\n" + "\n".join(legacy_only),
+            )
+            return
         n_jobs = self.plot_jobs.value()
         attempt_raw = self.plot_attempt.value()
         attempt = attempt_raw if attempt_raw > 0 else None
         input_tsv = self.plot_input_tsv.text().strip() or None
         output_report = self.plot_output_report.text().strip() or None
         qa_subject = self.chk_qa_subject.isChecked()
-        qa_group = self.chk_qa_group.isChecked()
-        qa_multisample = self.chk_qa_multisample.isChecked()
-        qc_group = self.chk_qc_group.isChecked()
-        qc_multisample = self.chk_qc_multisample.isChecked()
+        qa_dataset = self.chk_qa_dataset.isChecked()
+        qa_multi_dataset = self.chk_qa_multi_dataset.isChecked()
+        qc_dataset = self.chk_qc_dataset.isChecked()
+        qc_multi_dataset = self.chk_qc_multi_dataset.isChecked()
         analysis_mode, analysis_id, _cfg_policy, _sub_policy = self._collect_analysis_profile_settings()
         if not self._validate_analysis_selection(analysis_mode, analysis_id, cfg_policy=_cfg_policy, sub_policy=_sub_policy):
             return
         if analysis_mode == "new" and not analysis_id:
             QMessageBox.warning(self, "Plotting", "Mode 'new' requires a profile ID for plotting.\nUse mode 'reuse' with a profile ID, or 'latest'/'legacy'.")
             return
-        if not self._validate_multisample_profile_compatibility(analysis_mode, analysis_id, qa_multisample=qa_multisample, qc_multisample=qc_multisample):
+        if not self._validate_multi_dataset_profile_compatibility(analysis_mode, analysis_id, qa_multi_dataset=qa_multi_dataset, qc_multi_dataset=qc_multi_dataset):
             return
         check_qa_subject = qa_subject
-        if not any([qa_subject, qa_group, qa_multisample, qc_group, qc_multisample]):
+        if not any([qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset]):
             check_qa_subject = True
         try:
-            validate_plot_request(dataset_paths=dataset_paths, qa_subject=check_qa_subject, qa_group=qa_group,
-                                  qa_multisample=qa_multisample, qc_group=qc_group, qc_multisample=qc_multisample,
+            validate_plot_request(dataset_paths=dataset_paths, qa_subject=check_qa_subject, qa_dataset=qa_dataset,
+                                  qa_multi_dataset=qa_multi_dataset, qc_dataset=qc_dataset, qc_multi_dataset=qc_multi_dataset,
                                   input_tsv=input_tsv, output_report=output_report)
         except ValueError as exc:
             QMessageBox.warning(self, "Plotting", str(exc))
             return
         args = (
             dataset_paths, derivatives_dir, output_report, attempt, input_tsv, n_jobs,
-            qa_subject, qa_group, qa_multisample, qc_group, qc_multisample,
+            qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset,
             False, False, False, analysis_mode, analysis_id,
         )
         worker = Worker(run_plotting_dispatch, *args)
@@ -2941,24 +2974,24 @@ class MainWindow(QMainWindow):
         if not self._validate_analysis_selection(analysis_mode, analysis_id, cfg_policy=cfg_policy, sub_policy=sub_policy):
             return
         qa_subject = self.chk_qa_subject.isChecked()
-        qa_group = self.chk_qa_group.isChecked()
-        qa_multisample = self.chk_qa_multisample.isChecked()
-        qc_group = self.chk_qc_group.isChecked()
-        qc_multisample = self.chk_qc_multisample.isChecked()
-        multisample_requested = qa_multisample or qc_multisample
-        if analysis_mode == "new" and multisample_requested and len(dataset_paths) > 1 and not analysis_id:
+        qa_dataset = self.chk_qa_dataset.isChecked()
+        qa_multi_dataset = self.chk_qa_multi_dataset.isChecked()
+        qc_dataset = self.chk_qc_dataset.isChecked()
+        qc_multi_dataset = self.chk_qc_multi_dataset.isChecked()
+        multi_dataset_requested = qa_multi_dataset or qc_multi_dataset
+        if analysis_mode == "new" and multi_dataset_requested and len(dataset_paths) > 1 and not analysis_id:
             analysis_id = self._generate_shared_analysis_id()
             self.edit_analysis_id.setText(analysis_id)
-            self._log(f"Run ALL assigned shared analysis_id for multisample queue: {analysis_id}")
-        if not self._validate_multisample_profile_compatibility(analysis_mode, analysis_id, qa_multisample=qa_multisample, qc_multisample=qc_multisample, require_existing_profiles=False):
+            self._log(f"Run ALL assigned shared analysis_id for multi-dataset queue: {analysis_id}")
+        if not self._validate_multi_dataset_profile_compatibility(analysis_mode, analysis_id, qa_multi_dataset=qa_multi_dataset, qc_multi_dataset=qc_multi_dataset, require_existing_profiles=False):
             return
-        requested_any_scope = any([qa_subject, qa_group, qa_multisample, qc_group, qc_multisample])
+        requested_any_scope = any([qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset])
         args = (
             dataset_paths, str(self.default_settings_path), str(INTERNAL_PATH),
             "all", calc_jobs, plot_jobs, derivatives_dir, dataset_njobs, dataset_subs,
             self.global_config_path, dataset_cfg_overrides,
             analysis_mode, analysis_id, cfg_policy, sub_policy, False, False,
-            qa_subject, qa_group, qa_multisample, qc_group, qc_multisample,
+            qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset,
             False, False, not requested_any_scope,
         )
         worker = Worker(run_all_dispatch, *args)
@@ -3005,6 +3038,23 @@ class MainWindow(QMainWindow):
     # ──────────────────────────────── #
     # QC Viewer launcher               #
     # ──────────────────────────────── #
+    # URL of the online release / version notes page.
+    VERSION_NOTES_URL = (
+        "https://ancplaboldenburg.github.io/megqc_documentation/updates.html"
+    )
+
+    def _open_version_notes(self):
+        """Open the online version notes page in the default web browser."""
+        try:
+            QDesktopServices.openUrl(QUrl(self.VERSION_NOTES_URL))
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Version notes",
+                f"Could not open the version notes page:\n{e}\n\n"
+                f"You can visit it directly at:\n{self.VERSION_NOTES_URL}",
+            )
+
     def _open_qc_viewer(self):
         """Open the integrated QC Viewer window."""
         try:

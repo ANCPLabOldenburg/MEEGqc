@@ -238,11 +238,14 @@ def get_noisy_flat_std_ptp_epochs(df_std: pd.DataFrame, ch_type: str, std_or_ptp
         df_flat_epoch.loc['flat < %s perc' % percent_noisy_flat_allowed, ep] = df_flat_epoch.iloc[:-3,ep].sum() > n_channels * percent_noisy_flat_allowed / 100
 
 
-    # Create derivatives:
+    # Create derivatives. The names are BIDS-valid (alphanumeric CamelCase) desc
+    # labels composed directly here, e.g. STDPerEpochVsMeanRatioMag.
+    metric_label = 'STD' if std_or_ptp.lower() == 'std' else 'PtP'
+    ch_label = ch_type.capitalize()
     noisy_flat_epochs_derivs = [
-        QC_derivative(df_epoch_vs_mean, std_or_ptp+'_per_epoch_vs_mean_ratio_'+ch_type, 'df'),
-        QC_derivative(df_noisy_epoch, 'Noisy_epochs_on_'+std_or_ptp+'_base_'+ch_type, 'df'),
-        QC_derivative(df_flat_epoch, 'Flat_epochs_on_'+std_or_ptp+'_base_'+ch_type, 'df')]
+        QC_derivative(df_epoch_vs_mean, f'{metric_label}PerEpochVsMeanRatio{ch_label}', 'df'),
+        QC_derivative(df_noisy_epoch, f'NoisyEpochsOn{metric_label}Base{ch_label}', 'df'),
+        QC_derivative(df_flat_epoch, f'FlatEpochsOn{metric_label}Base{ch_label}', 'df')]
 
     return noisy_flat_epochs_derivs
 

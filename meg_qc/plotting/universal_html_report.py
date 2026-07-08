@@ -249,13 +249,13 @@ def make_joined_report(sections: dict, report_strings: dict):
     <html>
         <head>
             <meta charset="UTF-8">
-            <title>MEG QC report</title>
+            <title>MEEGqc report</title>
             <style>body{ margin:0 100;}</style>
         </head>
         
         <body style="font-family: Arial">
             <center>
-            <h1>MEG data quality analysis report</h1>
+            <h1>MEEGqc: MEG data quality analysis report</h1>
             <br></br>
             """+ report_strings['SHIELDING'] + report_strings['M_OR_G_SKIPPED'] + report_strings['EPOCHING']
 
@@ -302,7 +302,7 @@ def make_joined_report_mne(raw_info_path: str, sections:dict, report_strings: di
     
     """
 
-    report = mne.Report(title=' MEG QC Report')
+    report = mne.Report(title=' MEEGqc Report')
     # This method also accepts a path, e.g., raw=raw_path
     if raw_info_path: #if info present
         info_loaded = mne.io.read_info(raw_info_path)

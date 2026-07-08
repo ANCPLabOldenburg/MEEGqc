@@ -208,10 +208,12 @@ def get_ampl_of_brain_waves(channels: List, m_or_g: str, freqs: np.ndarray, psds
 
     abs_band_ampl_df, relative_band_ampl_df, ampl_by_Nfreq_per_ch_list_df, _ = get_bands_amplitude_per_ch(wave_bands, freqs, psds, channels, bands_names)
 
+    # BIDS-valid (alphanumeric CamelCase) desc labels, e.g. AbsAmplMag.
+    ch_label = m_or_g.capitalize()
     dfs_with_name = [
-        QC_derivative(abs_band_ampl_df,'abs_ampl_'+m_or_g, 'df'),
-        QC_derivative(relative_band_ampl_df, 'relative_ampl_'+m_or_g, 'df'),
-        QC_derivative(ampl_by_Nfreq_per_ch_list_df, 'ampl_by_Nfreq_'+m_or_g, 'df')]
+        QC_derivative(abs_band_ampl_df, f'AbsAmpl{ch_label}', 'df'),
+        QC_derivative(relative_band_ampl_df, f'RelativeAmpl{ch_label}', 'df'),
+        QC_derivative(ampl_by_Nfreq_per_ch_list_df, f'AmplByNfreq{ch_label}', 'df')]
 
     # Calculate the mean amplitude of each band over all channels:
     abs_mean_band_ampl_df, relative_mean_band_ampl_df, _, total_ampl = get_bands_amplitude_per_ch(wave_bands, freqs, [avg_psd], ['Average PSD'], bands_names)

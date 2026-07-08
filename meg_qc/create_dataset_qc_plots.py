@@ -1,17 +1,17 @@
-"""Command-line helper to run dataset-level QC group plotting."""
+"""Command-line helper to run dataset-level QC plotting."""
 
 from __future__ import annotations
 
 import argparse
 
 from meg_qc.calculation.meg_qc_pipeline import resolve_output_roots
-from meg_qc.plotting.meg_qc_group_qc_plots import (
-    make_group_qc_plots_meg_qc,
-    make_group_qc_plots_multi_meg_qc,
+from meg_qc.plotting.meg_qc_dataset_qc_plots import (
+    make_dataset_qc_plots_meg_qc,
+    make_dataset_qc_plots_multi_meg_qc,
 )
 
 
-def get_group_qc_plots() -> None:
+def get_dataset_qc_plots() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run MEGqc dataset-level QC plotting from Global Quality Index TSV: "
@@ -31,7 +31,7 @@ def get_group_qc_plots() -> None:
         type=str,
         required=False,
         help=(
-            "Optional explicit Global_Quality_Index_attempt_*.tsv file. "
+            "Optional explicit desc-GlobalQualityIndexAttempt*_*.tsv file. "
             "If omitted, latest attempt is selected automatically."
         ),
     )
@@ -57,7 +57,7 @@ def get_group_qc_plots() -> None:
         "--output_report",
         type=str,
         required=False,
-        help="Optional explicit output HTML path for the QC group report.",
+        help="Optional explicit output HTML path for the QC dataset report.",
     )
     args = parser.parse_args()
 
@@ -69,7 +69,7 @@ def get_group_qc_plots() -> None:
         print(f"___MEGqc___: Reading derivatives from: {derivatives_root}")
 
     if len(data_directory) == 1:
-        out = make_group_qc_plots_meg_qc(
+        out = make_dataset_qc_plots_meg_qc(
             dataset_path=data_directory[0],
             input_tsv=args.input_tsv,
             output_html=args.output_report,
@@ -79,15 +79,15 @@ def get_group_qc_plots() -> None:
     else:
         if args.input_tsv:
             print("___MEGqc___: --input_tsv is ignored in multi-dataset mode (automatic attempt/latest selection per dataset).")
-        out = make_group_qc_plots_multi_meg_qc(
+        out = make_dataset_qc_plots_multi_meg_qc(
             dataset_paths=data_directory,
             output_html=args.output_report,
             attempt=args.attempt,
             derivatives_base=derivatives_base,
         )
     if out is None:
-        print("___MEGqc___: No QC group report was generated.")
+        print("___MEGqc___: No QC dataset report was generated.")
 
 
 if __name__ == "__main__":
-    get_group_qc_plots()
+    get_dataset_qc_plots()

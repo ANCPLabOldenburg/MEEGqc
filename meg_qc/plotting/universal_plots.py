@@ -7,10 +7,14 @@ import random
 import copy
 import os
 import re
-from typing import List
+import html
+import configparser
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple, Dict, Any
 import matplotlib.pyplot as plt
 from mne.preprocessing import compute_average_dev_head_t
 from meg_qc.calculation.objects import QC_derivative, MEG_channel
+from meg_qc.plotting.topomap_2d import make_flat_topomap_figure, make_flat_sensor_figure, BLUE_RED_COLORSCALE, COLORMAP_OPTIONS
 import matplotlib #this is in case we will need to suppress mne matplotlib plots
 
 
@@ -94,6 +98,306 @@ def _add_solid_cap_toggle_to_3d_figure(fig: go.Figure, x_vals, y_vals, z_vals) -
         )
     )
     fig.update_layout(updatemenus=menus)
+
+
+def _add_colormap_menu_3d(fig: go.Figure, trace_idx: int = 0) -> None:
+    """Add a colour-map dropdown to a 3D topomap (same options as the 2D maps).
+
+    Default convention: high values red, low values blue (RdBu reversed).
+    """
+    # ``marker.colorscale`` is array-valued, so for a single-trace restyle the
+    # value must be wrapped in a list — otherwise Plotly reads the colour stops
+    # as per-trace values and the option (e.g. Red-Blue) never re-applies.
+    buttons = [
+        dict(label=lab, method="restyle",
+             args=[{"marker.colorscale": [cs], "marker.reversescale": [False]}, [trace_idx]])
+        for lab, cs in COLORMAP_OPTIONS
+    ]
+    menus = list(fig.layout.updatemenus) if fig.layout.updatemenus else []
+    # ``name`` becomes the control title in the report's external control panel.
+    menus.append(dict(
+        type="dropdown", name="Colour map", direction="down", x=0.42, y=1.03,
+        xanchor="left", yanchor="top", showactive=True, bgcolor="#F7FBFF",
+        bordercolor="#2B6CB0", borderwidth=1.0, font=dict(size=11, color="#0F3D6E"),
+        pad=dict(r=2, t=2, l=2, b=2), buttons=buttons,
+    ))
+    fig.update_layout(updatemenus=menus)
+
+
+# ---------------------------------------------------------------------------
+# Shared "Settings" tab rendering. Every report (subject, QA dataset, QC dataset and
+# multi-dataset) renders the exact same elegant, self-contained snapshot so the
+# look stays consistent and the text always fits the report column.
+# ---------------------------------------------------------------------------
+
+# QA reports must not reveal QC thresholds; keys/values containing one of these
+# tokens are hidden from the QA-safe snapshot view.
+QA_DISALLOWED_TOKENS = ("bad", "good", "reject", "flag", "exceed", "pass", "fail", "threshold")
+
+# CSS shared by every report's Settings tab. Injected verbatim into each report
+# template via a ``{settings_css}`` placeholder (f-string substitution does not
+# re-scan the value, so the single braces below are safe).
+SETTINGS_TAB_CSS = """
+    .settings-snapshot .settings-intro { color: #334e68; font-size: 13px; margin: 4px 0 10px; }
+    .settings-snapshot .settings-ds {
+      margin: 16px 0 6px;
+      font-size: 15px;
+      color: #0f3d6e;
+      border-left: 4px solid #2b6cb0;
+      padding-left: 10px;
+    }
+    .settings-snapshot .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 14px;
+      margin-top: 8px;
+    }
+    .settings-card {
+      border: 1px solid #d7e6f7;
+      border-radius: 12px;
+      background: #fbfdff;
+      box-shadow: 0 3px 12px rgba(7, 41, 74, 0.06);
+      overflow: hidden;
+      min-width: 0;
+    }
+    .settings-card > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 14px;
+      font-weight: 700;
+      color: #0f3d6e;
+      background: linear-gradient(135deg, #eaf3ff, #f5f9ff);
+      border-bottom: 1px solid #e1edfa;
+    }
+    .settings-card > summary::-webkit-details-marker { display: none; }
+    .settings-card > summary::before { content: "\\25B8  "; color: #2b6cb0; }
+    .settings-card[open] > summary::before { content: "\\25BE  "; }
+    .settings-card .settings-note { padding: 8px 14px; color: #51657d; font-style: italic; font-size: 13px; }
+    table.settings-table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+    table.settings-table td {
+      padding: 6px 12px;
+      border-bottom: 1px solid #eef4fb;
+      vertical-align: top;
+    }
+    table.settings-table td.set-key {
+      color: #334e68;
+      font-weight: 600;
+      width: 46%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    table.settings-table td.set-val {
+      color: #0b1f33;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .machine-readable { margin-top: 14px; max-width: 100%; }
+    .machine-readable .mr-intro { color: #334e68; font-size: 13px; margin: 4px 0 8px; }
+    .machine-readable .mr-box {
+      max-width: 100%;
+      max-height: 360px;
+      overflow: auto;
+      border: 1px solid #d8e4f3;
+      border-radius: 10px;
+      background: #f7fbff;
+    }
+    .machine-readable ul { list-style: none; margin: 0; padding: 0; }
+    .machine-readable li {
+      padding: 6px 12px;
+      border-bottom: 1px solid #eef4fb;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      color: #0b1f33;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
+    }
+    .machine-readable li:last-child { border-bottom: none; }
+    .machine-readable code {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
+      background: none;
+    }
+"""
+
+
+def resolve_used_settings_path(config_dir) -> Optional[Path]:
+    """Locate the settings snapshot written by the calculation step.
+
+    Prefers the newest ``*UsedSettings*.ini`` snapshot saved under the analysis
+    ``config`` folder (the exact settings used for this run — every profile gets
+    one), falls back to any ``.ini`` there, then to the packaged default
+    ``settings.ini`` so the snapshot is never empty.
+    """
+    if config_dir is not None:
+        try:
+            cfg_dir = Path(config_dir)
+            if cfg_dir.is_dir():
+                snaps = sorted(
+                    cfg_dir.glob("*UsedSettings*.ini"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if snaps:
+                    return snaps[0]
+                any_ini = sorted(cfg_dir.glob("*.ini"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if any_ini:
+                    return any_ini[0]
+        except Exception:
+            pass
+    # Package default fallback (meg_qc/settings/settings.ini).
+    default = Path(__file__).resolve().parent.parent / "settings" / "settings.ini"
+    return default if default.exists() else None
+
+
+def parse_ini_settings_to_sections(
+    ini_path,
+    *,
+    disallowed_tokens: Optional[Sequence[str]] = None,
+    sections: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Parse an .ini settings file into a structured, render-ready snapshot.
+
+    Returns ``{"source": <file name or None>, "sections": [...]}`` where each
+    section is either ``{"name": str, "items": [(key, value), ...]}`` or, when a
+    section is fully filtered out, ``{"name": str, "note": str}``.
+
+    ``disallowed_tokens`` hides any key/value containing one of the tokens (used
+    for the QA-safe view so QC thresholds never leak into QA reports).
+    ``sections`` restricts and orders which sections are shown (defaults to the
+    file's own order). Parsing via ``configparser`` keeps values containing
+    commas/equals intact, unlike re-splitting a flattened text snapshot.
+    """
+    if ini_path is None:
+        return {"source": None, "sections": []}
+    p = Path(ini_path)
+    if not p.exists():
+        return {"source": None, "sections": []}
+    parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    try:
+        parser.read(p, encoding="utf-8")
+    except Exception:
+        return {"source": p.name, "sections": []}
+
+    tokens = tuple(t.lower() for t in (disallowed_tokens or ()))
+    order = list(sections) if sections is not None else parser.sections()
+    out_sections: List[Dict[str, Any]] = []
+    for section in order:
+        if section not in parser:
+            continue
+        raw = list(parser.items(section))
+        if not raw:
+            continue  # genuinely empty section — skip in every mode
+        items: List[Tuple[str, str]] = []
+        for key, value in raw:
+            if tokens and (any(t in key.lower() for t in tokens)
+                           or any(t in str(value).lower() for t in tokens)):
+                continue
+            items.append((key, value))
+        if items:
+            out_sections.append({"name": section, "items": items})
+        elif tokens:
+            # Had settings, but all were QA-sensitive and hidden from this view.
+            out_sections.append({"name": section, "note": "QA-safe settings view active"})
+    return {"source": p.name, "sections": out_sections}
+
+
+def render_settings_cards(snapshot: Optional[Dict[str, Any]], *, heading: Optional[str] = None) -> str:
+    """Render one structured snapshot as a grid of collapsible key/value cards."""
+    if not snapshot or not snapshot.get("sections"):
+        head = f"<h3 class='settings-ds'>{html.escape(heading)}</h3>" if heading else ""
+        return head + "<p class='settings-note'>No settings could be located for this analysis.</p>"
+
+    cards: List[str] = []
+    for section in snapshot["sections"]:
+        name = html.escape(str(section.get("name", "")))
+        if "items" in section:
+            rows = "".join(
+                f"<tr><td class='set-key'>{html.escape(str(k))}</td>"
+                f"<td class='set-val'>{html.escape(str(v)) if str(v).strip() else '<em>(empty)</em>'}</td></tr>"
+                for k, v in section["items"]
+            )
+            cards.append(
+                "<details class='settings-card' open>"
+                f"<summary>{name}</summary>"
+                f"<table class='settings-table'><tbody>{rows}</tbody></table>"
+                "</details>"
+            )
+        else:
+            note = html.escape(str(section.get("note", "")))
+            cards.append(
+                "<details class='settings-card'>"
+                f"<summary>{name}</summary>"
+                f"<div class='settings-note'>{note}</div>"
+                "</details>"
+            )
+
+    parts: List[str] = []
+    if heading:
+        parts.append(f"<h3 class='settings-ds'>{html.escape(heading)}</h3>")
+    src = snapshot.get("source")
+    if src:
+        parts.append(f"<p class='settings-intro'>Source: <code>{html.escape(str(src))}</code></p>")
+    parts.append(f"<div class='settings-grid'>{''.join(cards)}</div>")
+    return "".join(parts)
+
+
+def render_machine_readable_subsection(
+    rows: Sequence[str],
+    *,
+    intro: Optional[str] = None,
+    max_lines: int = 300,
+) -> str:
+    """Render a machine-readable input list that always fits its box.
+
+    Long paths wrap inside a bordered, scrollable box so the text never spills
+    beyond the report column or window.
+    """
+    rows = [str(r) for r in rows]
+    if not rows:
+        inner = "<p class='settings-note'>No machine-readable inputs were consumed.</p>"
+    else:
+        visible = rows[:max_lines]
+        hidden = max(0, len(rows) - max_lines)
+        items = "".join(f"<li><code>{html.escape(r)}</code></li>" for r in visible)
+        if hidden > 0:
+            items += f"<li>... {hidden} additional entries omitted for brevity.</li>"
+        inner = f"<div class='mr-box'><ul>{items}</ul></div>"
+    intro_html = f"<p class='mr-intro'>{html.escape(intro)}</p>" if intro else ""
+    return (
+        "<div class='machine-readable'>"
+        "<h3>Machine-readable input</h3>"
+        f"{intro_html}{inner}"
+        "</div>"
+    )
+
+
+def build_settings_tab_html(
+    snapshots: Sequence[Tuple[Optional[str], Dict[str, Any]]],
+    *,
+    intro: Optional[str] = None,
+    machine_readable_rows: Optional[Sequence[str]] = None,
+    machine_readable_intro: Optional[str] = None,
+) -> str:
+    """Assemble a full Settings tab: snapshot card-grids + machine-readable subsection.
+
+    ``snapshots`` is a sequence of ``(heading, snapshot_dict)`` pairs; pass
+    ``heading=None`` for a single unlabelled snapshot.
+    """
+    parts: List[str] = ["<section class='settings-snapshot'>", "<h2>Settings snapshot</h2>"]
+    if intro:
+        parts.append(f"<p class='settings-intro'>{html.escape(intro)}</p>")
+    if snapshots:
+        for heading, snap in snapshots:
+            parts.append(render_settings_cards(snap, heading=heading))
+    else:
+        parts.append("<p class='settings-note'>No settings snapshot is available.</p>")
+    if machine_readable_rows is not None:
+        parts.append(render_machine_readable_subsection(machine_readable_rows, intro=machine_readable_intro))
+    parts.append("</section>")
+    return "".join(parts)
 
 
 def _norm_colname(name: str) -> str:
@@ -204,6 +508,31 @@ def get_tit_and_unit(m_or_g: str, psd: bool = False):
     return m_or_g_tit, unit
 
 
+def amplitude_scale_unit(ch_type, system=None):
+    """Return ``(scale, unit_label)`` to convert SI amplitudes to display units.
+
+    Used to keep units identical across every figure / report:
+
+    - Magnetometers: Tesla -> femtotesla (fT), x1e15.
+    - Gradiometers: planar (Neuromag / Elekta / MEGIN, stored in T/m) -> fT/cm,
+      x1e13; axial (CTF / 4D-BTi / KIT, stored in T) -> fT, x1e15.
+    - EEG / ECG / EOG: Volts -> microvolts (uV), x1e6.
+
+    ``system`` is the acquisition system string (e.g. from ``get_meg_system``)
+    used only to pick planar vs axial gradiometer convention.
+    """
+    t = str(ch_type or '').lower()
+    sys = str(system or '').upper()
+    if t == 'mag':
+        return 1e15, 'fT'
+    if t == 'grad':
+        axial = any(s in sys for s in ('CTF', '4D', 'BTI', 'MAGNES', 'KIT', 'YOKOGAWA', 'RICOH'))
+        if axial:
+            return 1e15, 'fT'
+        return 1e13, 'fT/cm'
+    if t in ('eeg', 'ecg', 'eog'):
+        return 1e6, 'µV'
+    return 1.0, 'a.u.'
 
 
 
@@ -1406,7 +1735,8 @@ def boxplot_epoched_xaxis_channels_csv(std_csv_path: str, ch_type: str, what_dat
     """
     df = pd.read_csv(std_csv_path, sep='\t')
 
-    ch_tit, unit = get_tit_and_unit(ch_type)
+    ch_tit, _ = get_tit_and_unit(ch_type)
+    scale, unit = amplitude_scale_unit(ch_type, get_meg_system(df) if 'System' in df.columns else None)
 
     if what_data == 'peaks':
         metric_title = 'PtP'
@@ -1427,7 +1757,7 @@ def boxplot_epoched_xaxis_channels_csv(std_csv_path: str, ch_type: str, what_dat
     if not epoch_columns:
         return []
 
-    data_matrix = filtered_df[epoch_columns].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)
+    data_matrix = filtered_df[epoch_columns].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float) * scale
     if data_matrix.size == 0 or np.isnan(data_matrix).all():
         return []
 
@@ -1445,7 +1775,7 @@ def boxplot_epoched_xaxis_channels_csv(std_csv_path: str, ch_type: str, what_dat
     # Keep natural (original) order for toggle button.
     data_matrix_natural = data_matrix.copy()
 
-    # Match group-level style: sort channels by robust channel summary (high→low).
+    # Match dataset-level style: sort channels by robust channel summary (high→low).
     sort_key = np.nanmedian(data_matrix, axis=1)
     sort_key = np.nan_to_num(sort_key, nan=-np.inf)
     sort_idx = np.argsort(sort_key)[::-1]
@@ -1828,93 +2158,95 @@ def boxplot_epoched_xaxis_channels_csv(std_csv_path: str, ch_type: str, what_dat
     return fig_deriv
 
 
-def plot_topomap_std_ptp_csv(std_csv_path: str, ch_type: str, what_data: str):
+def plot_2d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: str):
 
     """
-    
-    Plot STD using mne.viz.plot_topomap(data, pos, *, ch_type='mag', sensors=True, names=None) 
-    
-    For every channel we take STD/PtP value and plot as topomap
+    Interactive 2D flattened topomap of STD/PtP values (taken over all time).
+
+    This is the flattened (nose-up) counterpart of ``plot_3d_topomap_std_ptp_csv``:
+    the same per-channel scalar and co-located-sensor grouping, rendered as an
+    interpolated field with sensor markers via the shared 2D renderer.
+
+    Parameters
+    ----------
+    sensors_csv_path : str
+        Path to the tsv file with the sensors locations and metric values.
+    ch_type : str
+        Type of the channels: mag or grad
+    what_data : str
+        'peaks' or 'stds'
+
+    Returns
+    -------
+    qc_derivative : List
+        A list with one QC_derivative wrapping the plotly figure (or empty).
     """
 
-    #First, convert scv back into dict with MEG_channel objects:
-
-    df = pd.read_csv(std_csv_path, sep='\t')
+    df = pd.read_csv(sensors_csv_path, sep='\t')
     if 'Type' not in df.columns:
         return []
     df = df[df['Type'] == ch_type].copy()
     if df.empty:
         return []
 
-    ch_tit, unit = get_tit_and_unit(ch_type)
+    ch_tit, _ = get_tit_and_unit(ch_type)
+    scale, unit = amplitude_scale_unit(ch_type, get_meg_system(df) if 'System' in df.columns else None)
 
-    if what_data=='peaks':
-        y_ax_and_fig_title='Peak-to-peak amplitude'
-        fig_name='PP_manual_all_data_Topomap_'+ch_tit
-    elif what_data=='stds':
-        y_ax_and_fig_title='Standard deviation'
-        fig_name='STD_epoch_all_data_Topomap_'+ch_tit
+    if what_data == 'peaks':
+        fig_name = 'PP_manual_all_data_Topomap_2D_' + ch_tit
+        metric = 'PtP'
+        metric_title = 'Peak-to-peak amplitude'
+    elif what_data == 'stds':
+        fig_name = 'STD_epoch_all_data_Topomap_2D_' + ch_tit
+        metric = 'STD'
+        metric_title = 'Standard deviation'
     else:
         raise ValueError('what_data must be set to "stds" or "peaks"')
 
-    
-    sensor_location_cols = [col for col in df.columns if 'Sensor_location' in col]
-    if len(sensor_location_cols) < 2:
+    required = {'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'}
+    if not required.issubset(set(df.columns)):
+        return []
+    scalar = _metric_scalar_series(df, what_data)
+    if scalar.empty:
+        return []
+    df['__metric_value__'] = pd.to_numeric(scalar, errors='coerce') * scale
+    df = df.dropna(subset=['__metric_value__', 'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'])
+    if df.empty:
         return []
 
-    scalars = _metric_scalar_series(df, what_data)
-    if scalars.empty:
+    has_lobe = 'Lobe' in df.columns
+    cols = ['Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2', '__metric_value__', 'Name']
+    if has_lobe:
+        cols.append('Lobe')
+    sensor_df = df[cols]
+
+    # Group co-located sensors (e.g. Elekta grad pairs) into one point, averaging
+    # the value and listing both channel names + values in the hover text.
+    agg = {
+        '__metric_value__': 'mean',
+        'Name': lambda x: '<br>'.join([f"{name} - {metric}: {std:.3g} {unit}" for name, std in zip(x, sensor_df.loc[x.index, '__metric_value__'])]),
+    }
+    if has_lobe:
+        agg['Lobe'] = 'first'
+    grouped = sensor_df.groupby(['Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2']).agg(agg).reset_index()
+    if grouped.empty:
         return []
 
-    data = pd.to_numeric(scalars, errors='coerce').to_numpy(dtype=float)
-    pos = df[sensor_location_cols[:2]].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)
-    if 'Name' in df.columns:
-        names = df['Name'].fillna('').astype(str).tolist()
-    else:
-        names = [f"{ch_type}_{idx}" for idx in range(len(df))]
-
-    # convert to arrays
-    data = np.asarray(data, dtype=float)
-    pos = np.asarray(pos, dtype=float)
-    valid = np.isfinite(data) & np.isfinite(pos).all(axis=1)
-    data = data[valid]
-    pos = pos[valid]
-    if data.size == 0 or pos.size == 0:
-        return []
-
-    # Small deterministic jitter for overlapping planar gradiometer positions.
-    # This avoids interpolation singularities while preserving layout geometry.
-    rounded = np.round(pos, decimals=10)
-    _, inv, counts = np.unique(rounded, axis=0, return_inverse=True, return_counts=True)
-    if np.any(counts > 1):
-        base = max(np.nanstd(pos[:, 0]), np.nanstd(pos[:, 1]), 1e-6) * 1e-3
-        for group_idx, count in enumerate(counts):
-            if count <= 1:
-                continue
-            inds = np.where(inv == group_idx)[0]
-            shifts = np.linspace(-base, base, num=inds.size)
-            pos[inds, 0] += shifts
-
-    fig, ax = plt.subplots(figsize=(7.0, 6.0), layout='constrained')
-    im, _ = mne.viz.plot_topomap(
-        data,
-        pos,
-        ch_type=ch_type,
-        names=None,
-        sensors=True,
-        contours=6,
-        res=256,
-        show=False,
-        axes=ax,
-        sphere=(0.0, 0.0, 0.0, 0.1),
+    fig = make_flat_topomap_figure(
+        grouped['Sensor_location_0'].to_numpy(dtype=float),
+        grouped['Sensor_location_1'].to_numpy(dtype=float),
+        grouped['Sensor_location_2'].to_numpy(dtype=float),
+        grouped['__metric_value__'].to_numpy(dtype=float),
+        grouped['Name'].tolist(),
+        color_title=f'{metric}, {unit}',
+        title=f'{metric_title} flat topomap (2D) for {ch_tit}',
+        hovertext=grouped['Name'].tolist(),
+        lobes=grouped['Lobe'].tolist() if has_lobe else None,
     )
-    cbar = fig.colorbar(im, ax=ax, fraction=0.05, pad=0.04)
-    cbar.set_label(f'{y_ax_and_fig_title} ({unit})')
-    ax.set_title(f'{y_ax_and_fig_title} topomap for {ch_tit}')
+    if fig is None:
+        return []
 
-    qc_derivative = [QC_derivative(content=fig, name=fig_name, content_type='matplotlib')]
-
-    return qc_derivative
+    return [QC_derivative(content=fig, name=fig_name, content_type='plotly')]
 
 
 def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: str):
@@ -1950,7 +2282,8 @@ def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: 
     if df.empty:
         return []
 
-    ch_tit, unit = get_tit_and_unit(ch_type)
+    ch_tit, _ = get_tit_and_unit(ch_type)
+    scale, unit = amplitude_scale_unit(ch_type, get_meg_system(df) if 'System' in df.columns else None)
 
 
     if what_data=='peaks':
@@ -1961,14 +2294,14 @@ def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: 
         metric = 'STD'
     else:
         raise ValueError('what_data must be set to "stds" or "peaks"')
-    
+
     required = {'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'}
     if not required.issubset(set(df.columns)):
         return []
     scalar = _metric_scalar_series(df, what_data)
     if scalar.empty:
         return []
-    df['__metric_value__'] = pd.to_numeric(scalar, errors='coerce')
+    df['__metric_value__'] = pd.to_numeric(scalar, errors='coerce') * scale
     df = df.dropna(subset=['__metric_value__', 'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'])
     if df.empty:
         return []
@@ -1979,12 +2312,12 @@ def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: 
     # Group by sensor locations, this is done in case we got GRADIOMETERS,
     # cos they have 2 sensors located in the same spot.
     # We calculate mean value for each group: the mean of 'STD all' or 'PtP all' columns for 2 channels,
-    # this mean value will be used to define the color. 
+    # this mean value will be used to define the color.
     # We assume that means std/ptp of physically close to each other gardiomeeters is also close in value.
-    # Here also create groupped names, later used in hover 
+    # Here also create groupped names, later used in hover
     grouped = sensor_df.groupby(['Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2']).agg({
         '__metric_value__': 'mean',
-        'Name': lambda x: ', '.join([f"{name} - {metric}: {std:.2e} {unit}" for name, std in zip(x, sensor_df.loc[x.index, '__metric_value__'])])
+        'Name': lambda x: ', '.join([f"{name} - {metric}: {std:.3g} {unit}" for name, std in zip(x, sensor_df.loc[x.index, '__metric_value__'])])
     }).reset_index()
     if grouped.empty:
         return []
@@ -2005,7 +2338,7 @@ def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: 
         marker=dict(
             size=13,
             color=mean_metric_values,  # Use the mean metric values for the color scale
-            colorscale='Turbo',
+            colorscale=BLUE_RED_COLORSCALE,  # high values red, low values blue
             colorbar=dict(
                 title=dict(
                     text=f'{metric}, {unit}',
@@ -2013,7 +2346,7 @@ def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: 
                 ),
                 tickmode='array',
                 tickvals=[np.min(mean_metric_values), np.max(mean_metric_values)],
-                ticktext=[f'{np.min(mean_metric_values):.2e}', f'{np.max(mean_metric_values):.2e}'],
+                ticktext=[f'{np.min(mean_metric_values):.3g}', f'{np.max(mean_metric_values):.3g}'],
                 ticks='outside'
             ),
             opacity=0.8
@@ -2027,6 +2360,7 @@ def plot_3d_topomap_std_ptp_csv(sensors_csv_path: str, ch_type: str, what_data: 
         grouped_sensor_locations[:, 1],
         grouped_sensor_locations[:, 2],
     )
+    _add_colormap_menu_3d(fig, 0)
 
     # Set plot layout
     fig.update_layout(
@@ -2080,7 +2414,7 @@ def _plot_3d_channel_metric_csv(
         return "<br>".join([f"{row['Name']}: {row[metric_column]:.2e} {unit_title}" for _, row in group.iterrows()])
 
     grouped_values = sensor_df.groupby(loc_cols)[metric_column].mean()
-    grouped_hover = sensor_df.groupby(loc_cols).apply(_hover_text)
+    grouped_hover = sensor_df.groupby(loc_cols).apply(_hover_text, include_groups=False)
     grouped = grouped_values.reset_index(name='metric_value')
     grouped['hover_text'] = grouped_hover.values
 
@@ -2102,7 +2436,7 @@ def _plot_3d_channel_metric_csv(
             marker=dict(
                 size=12,
                 color=grouped['metric_value'],
-                colorscale='Turbo',
+                colorscale=BLUE_RED_COLORSCALE,  # high values red, low values blue
                 colorbar=dict(
                     title=dict(text=unit_title),
                     x=0.95,
@@ -2117,6 +2451,7 @@ def _plot_3d_channel_metric_csv(
         )
     )
     _add_solid_cap_toggle_to_3d_figure(fig, x_vals, y_vals, z_vals)
+    _add_colormap_menu_3d(fig, 0)
     fig.update_layout(
         height=860,
         margin=dict(t=20, r=24, b=16, l=20),
@@ -2140,27 +2475,32 @@ def _plot_3d_channel_metric_csv(
     ]
 
 
-def plot_3d_topomap_psd_csv(psd_csv_path: str, ch_type: str):
-    """Create 3D topomap for PSD mains relative power per channel."""
+def _psd_mains_ratio_df(psd_csv_path: str, ch_type: str):
+    """Return ``(df_ch, ch_tit)`` with a ``__psd_mains_ratio__`` column.
+
+    Shared by the 3D and 2D PSD topomaps so both use the identical per-channel
+    scalar (mains-band PSD divided by a low-frequency baseline). Returns
+    ``(None, None)`` when the file/columns are unsuitable.
+    """
     base_name = os.path.basename(psd_csv_path).lower()
     if 'desc-psds' not in base_name:
-        return []
+        return None, None
 
     df = pd.read_csv(psd_csv_path, sep='\t')
     freq_cols = [col for col in df.columns if col.startswith('PSD_Hz_')]
     if not freq_cols:
-        return []
+        return None, None
 
     freqs = np.array([float(col.replace('PSD_Hz_', '')) for col in freq_cols], dtype=float)
     if 'Type' not in df.columns:
-        return []
+        return None, None
     df_ch = df[df['Type'] == ch_type].copy()
     if df_ch.empty:
-        return []
+        return None, None
 
     psd_matrix = df_ch[freq_cols].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=float)
     if psd_matrix.size == 0 or np.isnan(psd_matrix).all():
-        return []
+        return None, None
 
     mains_mask = (freqs >= 45.0) & (freqs <= 65.0)
     if np.any(mains_mask):
@@ -2180,10 +2520,17 @@ def plot_3d_topomap_psd_csv(psd_csv_path: str, ch_type: str):
         baseline = np.nanmedian(psd_matrix, axis=1)
 
     eps = np.nanmedian(np.abs(psd_matrix)) * 1e-9 + 1e-30
-    mains_ratio = psd_matrix[:, mains_idx] / (baseline + eps)
-    df_ch['__psd_mains_ratio__'] = mains_ratio
+    df_ch['__psd_mains_ratio__'] = psd_matrix[:, mains_idx] / (baseline + eps)
 
     ch_tit, _ = get_tit_and_unit(ch_type)
+    return df_ch, ch_tit
+
+
+def plot_3d_topomap_psd_csv(psd_csv_path: str, ch_type: str):
+    """Create 3D topomap for PSD mains relative power per channel."""
+    df_ch, ch_tit = _psd_mains_ratio_df(psd_csv_path, ch_type)
+    if df_ch is None:
+        return []
     return _plot_3d_channel_metric_csv(
         df_ch,
         ch_type,
@@ -2221,6 +2568,181 @@ def plot_3d_topomap_ecg_eog_csv(f_path: str, ch_type: str, ecg_or_eog: str):
         fig_name=f'{upper_metric}_channel_wise_topomap_3D_{ch_tit}',
         description_for_user=f'Per-channel scalar is absolute {upper_metric} correlation magnitude |r|.',
     )
+
+
+def _plot_2d_channel_metric_csv(
+    df: pd.DataFrame,
+    ch_type: str,
+    metric_column: str,
+    *,
+    title: str,
+    unit_title: str,
+    color_title: str,
+    fig_name: str,
+    description_for_user: str = "",
+):
+    """Flattened 2D counterpart of ``_plot_3d_channel_metric_csv``.
+
+    Groups co-located sensors (mean scalar, merged hover names) and renders the
+    interpolated flattened field via the shared 2D renderer.
+    """
+    required_cols = {'Name', 'Type', metric_column, 'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'}
+    if not required_cols.issubset(set(df.columns)):
+        return []
+
+    df = df[df['Type'] == ch_type].copy()
+    if df.empty:
+        return []
+
+    df[metric_column] = pd.to_numeric(df[metric_column], errors='coerce')
+    df = df.dropna(subset=[metric_column, 'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'])
+    if df.empty:
+        return []
+
+    loc_cols = ['Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2']
+    has_lobe = 'Lobe' in df.columns
+    keep_cols = loc_cols + [metric_column, 'Name'] + (['Lobe'] if has_lobe else [])
+    sensor_df = df[keep_cols].copy()
+
+    def _hover_text(group: pd.DataFrame) -> str:
+        return "<br>".join([f"{row['Name']}: {row[metric_column]:.2e} {unit_title}" for _, row in group.iterrows()])
+
+    grouped_values = sensor_df.groupby(loc_cols)[metric_column].mean()
+    grouped_hover = sensor_df.groupby(loc_cols).apply(_hover_text, include_groups=False)
+    grouped = grouped_values.reset_index(name='metric_value')
+    grouped['hover_text'] = grouped_hover.values
+    if has_lobe:
+        grouped['Lobe'] = sensor_df.groupby(loc_cols)['Lobe'].first().values
+    if grouped.empty:
+        return []
+
+    fig = make_flat_topomap_figure(
+        grouped['Sensor_location_0'].to_numpy(dtype=float),
+        grouped['Sensor_location_1'].to_numpy(dtype=float),
+        grouped['Sensor_location_2'].to_numpy(dtype=float),
+        grouped['metric_value'].to_numpy(dtype=float),
+        grouped['hover_text'].tolist(),
+        color_title=color_title,
+        title=title,
+        hovertext=grouped['hover_text'].tolist(),
+        lobes=grouped['Lobe'].tolist() if has_lobe else None,
+    )
+    if fig is None:
+        return []
+
+    return [
+        QC_derivative(
+            content=fig,
+            name=fig_name,
+            content_type='plotly',
+            description_for_user=description_for_user,
+        )
+    ]
+
+
+def plot_2d_topomap_psd_csv(psd_csv_path: str, ch_type: str):
+    """Create flattened 2D topomap for PSD mains relative power per channel."""
+    df_ch, ch_tit = _psd_mains_ratio_df(psd_csv_path, ch_type)
+    if df_ch is None:
+        return []
+    return _plot_2d_channel_metric_csv(
+        df_ch,
+        ch_type,
+        '__psd_mains_ratio__',
+        title=f'PSD channel-wise flat topomap (2D): mains relative power for {ch_tit}',
+        unit_title='ratio',
+        color_title='ratio',
+        fig_name=f'PSD_channel_wise_topomap_2D_{ch_tit}',
+        description_for_user='Per-channel scalar is mains relative power (mains-band PSD divided by low-frequency baseline PSD).',
+    )
+
+
+def plot_2d_topomap_ecg_eog_csv(f_path: str, ch_type: str, ecg_or_eog: str):
+    """Create flattened 2D topomap for ECG/EOG correlation magnitude per channel."""
+    base_name = os.path.basename(f_path).lower()
+    metric = ecg_or_eog.strip().lower()
+    if metric == 'ecg' and 'desc-ecgs' not in base_name:
+        return []
+    if metric == 'eog' and 'desc-eogs' not in base_name:
+        return []
+
+    corr_col = f'{metric}_corr_coeff'
+    df = pd.read_csv(f_path, sep='\t')
+    if corr_col not in df.columns:
+        return []
+
+    df[corr_col] = pd.to_numeric(df[corr_col], errors='coerce').abs()
+    ch_tit, _ = get_tit_and_unit(ch_type)
+    upper_metric = metric.upper()
+    return _plot_2d_channel_metric_csv(
+        df,
+        ch_type,
+        corr_col,
+        title=f'{upper_metric} correlation-magnitude flat topomap (2D) for {ch_tit}',
+        unit_title='|r|',
+        color_title='|r|',
+        fig_name=f'{upper_metric}_channel_wise_topomap_2D_{ch_tit}',
+        description_for_user=f'Per-channel scalar is absolute {upper_metric} correlation magnitude |r|.',
+    )
+
+
+def plot_sensors_2d_csv(sensors_csv_path: str):
+    """Flattened 2D counterpart of ``plot_sensors_3d_csv`` (lobe-coloured).
+
+    Renders the sensor geometry on the flattened (nose-up) disc, colour-coded by
+    brain area, with one legend entry per lobe. Returns an empty list when the
+    file is unsuitable (e.g. ECG/EOG channel files or missing locations).
+    """
+    file_name = os.path.basename(sensors_csv_path)
+    if 'ecgchannel' in file_name.lower() or 'eogchannel' in file_name.lower():
+        return []
+
+    df = pd.read_csv(sensors_csv_path, sep='\t')
+    if 'Lobe' not in df.columns or 'System' not in df.columns:
+        return []
+
+    required = {'Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'}
+    if not required.issubset(set(df.columns)):
+        return []
+
+    df = df.copy()
+    for col in ('Sensor_location_0', 'Sensor_location_1', 'Sensor_location_2'):
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    df = df.dropna(subset=list(required))
+    if df.empty:
+        return []
+
+    system = get_meg_system(df)
+    if system.upper() == 'TRIUX':
+        fig_desc = "Magnetometers names end with '1' like 'MEG0111'. Gradiometers names end with '2' and '3' like 'MEG0112', 'MEG0113'."
+    else:
+        fig_desc = ""
+
+    names = df['Name'].fillna('').astype(str).tolist() if 'Name' in df.columns else [f'ch_{i}' for i in range(len(df))]
+    colors = df['Lobe Color'].fillna('#1f77b4').astype(str).tolist() if 'Lobe Color' in df.columns else ['#1f77b4'] * len(df)
+    lobes = df['Lobe'].fillna('Unknown').astype(str).tolist()
+
+    fig = make_flat_sensor_figure(
+        df['Sensor_location_0'].to_numpy(dtype=float),
+        df['Sensor_location_1'].to_numpy(dtype=float),
+        df['Sensor_location_2'].to_numpy(dtype=float),
+        names,
+        colors,
+        title='Sensors positions (2D flattened)',
+        lobes=lobes,
+    )
+    if fig is None:
+        return []
+
+    return [
+        QC_derivative(
+            content=fig,
+            name='Sensors_positions_2D',
+            content_type='plotly',
+            description_for_user=fig_desc,
+            fig_order=-1,
+        )
+    ]
 
 
 # ______________________PSD__________________________
@@ -2378,7 +2900,15 @@ def Plot_psd_csv(m_or_g:str, f_path: str, method: str):
     if fig is None:
         return []
 
-    tit, unit = get_tit_and_unit(m_or_g)
+    tit, _ = get_tit_and_unit(m_or_g)
+    # Amplitude spectral density: convert to fT/cm/µV-based units (per √Hz) so the
+    # PSD figure shares the same amplitude convention as every other figure.
+    scale, amp_unit = amplitude_scale_unit(m_or_g, get_meg_system(df) if 'System' in df.columns else None)
+    asd_unit = f"{amp_unit}/√Hz"
+    for tr in fig.data:
+        y = getattr(tr, 'y', None)
+        if y is not None:
+            tr.y = (np.asarray(y, dtype=float) * scale)
     fig.update_layout(
     title={
     'text': method[0].upper()+method[1:]+" periodogram for all "+tit,
@@ -2386,13 +2916,10 @@ def Plot_psd_csv(m_or_g:str, f_path: str, method: str):
     'x':0.5,
     'xanchor': 'center',
     'yanchor': 'top'},
-    yaxis_title="Amplitude, "+unit,
-    yaxis = dict(
-        showexponent = 'all',
-        exponentformat = 'e'),
+    yaxis_title="Amplitude spectral density, "+asd_unit,
     xaxis_title="Frequency (Hz)")
 
-    fig.update_traces(hovertemplate='Frequency: %{x} Hz<br>Amplitude: %{y: .2e} T/Hz')
+    fig.update_traces(hovertemplate='Frequency: %{x} Hz<br>ASD: %{y:.3g} '+asd_unit)
 
     #Add buttons to switch scale between log and linear:
     fig = add_log_buttons(fig)
@@ -2528,8 +3055,12 @@ def plot_pie_chart_freq_csv(tsv_pie_path: str, m_or_g: str, noise_or_waves: str)
     all_bands_names=bands_names.copy()
     #the lists change in this function and this change is tranfered outside the fuction even when these lists are not returned explicitly.
     #To keep them in original state outside the function, they are copied here.
-    all_mean_abs_values=amplitudes_abs.copy()
-    ch_type_tit, unit = get_tit_and_unit(m_or_g, psd=True)
+    ch_type_tit, _ = get_tit_and_unit(m_or_g, psd=True)
+    # Scale absolute amplitudes to the shared fT/cm/µV convention (per √Hz).
+    scale, amp_unit = amplitude_scale_unit(m_or_g, get_meg_system(df) if 'System' in df.columns else None)
+    asd_unit = f"{amp_unit}/√Hz"
+    all_mean_abs_values = [float(v) * scale for v in amplitudes_abs]
+    total_amplitude = float(total_amplitude) * scale
 
     #If mean relative percentages dont sum up into 100%, add the 'unknown' part.
     all_mean_relative_values=[v * 100 for v in amplitudes_relative]  #in percentage
@@ -2546,7 +3077,7 @@ def plot_pie_chart_freq_csv(tsv_pie_path: str, m_or_g: str, noise_or_waves: str)
 
     labels=[None]*len(all_bands_names)
     for n, name in enumerate(all_bands_names):
-        labels[n]=name + ': ' + str("%.2e" % all_mean_abs_values[n]) + ' ' + unit # "%.2e" % removes too many digits after coma
+        labels[n]=name + ': ' + str("%.3g" % all_mean_abs_values[n]) + ' ' + asd_unit
 
         #if some of the all_mean_abs_values are zero - they should not be shown in pie chart:
 
@@ -2736,7 +3267,8 @@ def boxplot_all_time_csv(std_csv_path: str, ch_type: str, what_data: str):
     if df.empty:
         return []
 
-    ch_tit, unit = get_tit_and_unit(ch_type)
+    ch_tit, _ = get_tit_and_unit(ch_type)
+    scale, unit = amplitude_scale_unit(ch_type, get_meg_system(df) if 'System' in df.columns else None)
 
     if what_data=='peaks':
         hover_tit='PP_Amplitude'
@@ -2765,7 +3297,7 @@ def boxplot_all_time_csv(std_csv_path: str, ch_type: str, what_data: str):
 
     default_color = '#2B6CB0'
     for idx, row in df.iterrows():
-        data = float(scalars.get(idx, np.nan))
+        data = float(scalars.get(idx, np.nan)) * scale
         if not np.isfinite(data):
             continue
 
@@ -2804,15 +3336,12 @@ def boxplot_all_time_csv(std_csv_path: str, ch_type: str, what_data: str):
     fig = go.Figure(data=all_traces)
 
     #Add hover text to the dots, remove too many digits after coma.
-    fig.update_traces(hovertemplate=hover_tit+': %{x: .2e}')
+    fig.update_traces(hovertemplate=hover_tit+': %{x: .3g}')
 
     #more settings:
     fig.update_layout(
         yaxis_range=[-0.5,0.5],
         yaxis={'visible': False, 'showticklabels': False},
-        xaxis = dict(
-        showexponent = 'all',
-        exponentformat = 'e'),
         xaxis_title=y_ax_and_fig_title+" in "+unit,
         title={
         'text': y_ax_and_fig_title+' of the data for '+ch_tit+' over the entire time series',
@@ -3313,12 +3842,15 @@ def plot_affected_channels_csv(df, artifact_lvl: float, t: np.ndarray, m_or_g: s
             return go.Figure()
 
         #decorate the plot:
-        ch_type_tit, unit = get_tit_and_unit(m_or_g)
+        ch_type_tit, _ = get_tit_and_unit(m_or_g)
+        # Artifact magnitude is measured on MEG channels -> display in fT / fT/cm.
+        scale, unit = amplitude_scale_unit(m_or_g, get_meg_system(df) if 'System' in df.columns else None)
+        for tr in fig.data:
+            y = getattr(tr, 'y', None)
+            if y is not None:
+                tr.y = np.asarray(y, dtype=float) * scale
         fig.update_layout(
             xaxis_title='Time in seconds',
-            yaxis = dict(
-                showexponent = 'all',
-                exponentformat = 'e'),
             yaxis_title='Mean magnitude in '+unit,
             title={
                 'text': fig_tit+str(len(df))+' '+ch_type_tit,
@@ -3564,8 +4096,10 @@ def plot_artif_per_ch_3_groups(f_path: str, m_or_g: str, ecg_or_eog: str, flip_d
 
     limits_df = df[cols]
 
-    ymax = limits_df.loc[:, limits_df.columns != 'Name'].max().max()
-    ymin = limits_df.loc[:, limits_df.columns != 'Name'].min().min()
+    # Match the per-figure amplitude scaling (fT / fT/cm) applied above.
+    _amp_scale, _ = amplitude_scale_unit(m_or_g, get_meg_system(df) if 'System' in df.columns else None)
+    ymax = limits_df.loc[:, limits_df.columns != 'Name'].max().max() * _amp_scale
+    ymin = limits_df.loc[:, limits_df.columns != 'Name'].min().min() * _amp_scale
 
     ylim = [ymin*.95, ymax*1.05]
 
@@ -3787,16 +4321,20 @@ def build_metric_derivatives_from_tsv(metric: str, tsv_paths: List[str], m_or_g_
         if 'STD' in metric.upper():
             if include_sensor_plots:
                 _extend_safe(std_derivs, plot_sensors_3d_csv, tsv_path)
+                _extend_safe(std_derivs, plot_sensors_2d_csv, tsv_path)
             for m_or_g in m_or_g_chosen:
                 _extend_safe(std_derivs, plot_3d_topomap_std_ptp_csv, tsv_path, ch_type=m_or_g, what_data='stds')
+                _extend_safe(std_derivs, plot_2d_topomap_std_ptp_csv, tsv_path, ch_type=m_or_g, what_data='stds')
                 _extend_safe(std_derivs, boxplot_all_time_csv, tsv_path, ch_type=m_or_g, what_data='stds')
                 _extend_safe(std_derivs, boxplot_epoched_xaxis_channels_csv, tsv_path, ch_type=m_or_g, what_data='stds')
 
         if 'PTP' in metric.upper():
             if include_sensor_plots:
                 _extend_safe(ptp_manual_derivs, plot_sensors_3d_csv, tsv_path)
+                _extend_safe(ptp_manual_derivs, plot_sensors_2d_csv, tsv_path)
             for m_or_g in m_or_g_chosen:
                 _extend_safe(ptp_manual_derivs, plot_3d_topomap_std_ptp_csv, tsv_path, ch_type=m_or_g, what_data='peaks')
+                _extend_safe(ptp_manual_derivs, plot_2d_topomap_std_ptp_csv, tsv_path, ch_type=m_or_g, what_data='peaks')
                 _extend_safe(ptp_manual_derivs, boxplot_all_time_csv, tsv_path, ch_type=m_or_g, what_data='peaks')
                 _extend_safe(ptp_manual_derivs, boxplot_epoched_xaxis_channels_csv, tsv_path, ch_type=m_or_g, what_data='peaks')
 
@@ -3804,29 +4342,35 @@ def build_metric_derivatives_from_tsv(metric: str, tsv_paths: List[str], m_or_g_
             method = 'welch'
             if include_sensor_plots:
                 _extend_safe(psd_derivs, plot_sensors_3d_csv, tsv_path)
+                _extend_safe(psd_derivs, plot_sensors_2d_csv, tsv_path)
             for m_or_g in m_or_g_chosen:
                 _extend_safe(psd_derivs, Plot_psd_csv, m_or_g, tsv_path, method)
                 _extend_safe(psd_derivs, plot_pie_chart_freq_csv, tsv_path, m_or_g=m_or_g, noise_or_waves='noise')
                 _extend_safe(psd_derivs, plot_pie_chart_freq_csv, tsv_path, m_or_g=m_or_g, noise_or_waves='waves')
                 _extend_safe(psd_derivs, plot_3d_topomap_psd_csv, tsv_path, ch_type=m_or_g)
+                _extend_safe(psd_derivs, plot_2d_topomap_psd_csv, tsv_path, ch_type=m_or_g)
 
         elif 'ECG' in metric.upper():
             if include_sensor_plots:
                 _extend_safe(ecg_derivs, plot_sensors_3d_csv, tsv_path)
+                _extend_safe(ecg_derivs, plot_sensors_2d_csv, tsv_path)
             _extend_safe(ecg_derivs, plot_ECG_EOG_channel_csv, tsv_path)
             _extend_safe(ecg_derivs, plot_mean_rwave_csv, tsv_path, 'ECG')
             for m_or_g in m_or_g_chosen:
                 _extend_safe(ecg_derivs, plot_artif_per_ch_3_groups, tsv_path, m_or_g, 'ECG', flip_data=False)
                 _extend_safe(ecg_derivs, plot_3d_topomap_ecg_eog_csv, tsv_path, m_or_g, 'ECG')
+                _extend_safe(ecg_derivs, plot_2d_topomap_ecg_eog_csv, tsv_path, m_or_g, 'ECG')
 
         elif 'EOG' in metric.upper():
             if include_sensor_plots:
                 _extend_safe(eog_derivs, plot_sensors_3d_csv, tsv_path)
+                _extend_safe(eog_derivs, plot_sensors_2d_csv, tsv_path)
             _extend_safe(eog_derivs, plot_ECG_EOG_channel_csv, tsv_path)
             _extend_safe(eog_derivs, plot_mean_rwave_csv, tsv_path, 'EOG')
             for m_or_g in m_or_g_chosen:
                 _extend_safe(eog_derivs, plot_artif_per_ch_3_groups, tsv_path, m_or_g, 'EOG', flip_data=False)
                 _extend_safe(eog_derivs, plot_3d_topomap_ecg_eog_csv, tsv_path, m_or_g, 'EOG')
+                _extend_safe(eog_derivs, plot_2d_topomap_ecg_eog_csv, tsv_path, m_or_g, 'EOG')
 
         elif 'MUSCLE' in metric.upper():
             _extend_safe(muscle_derivs, plot_muscle_csv, tsv_path)

@@ -3,6 +3,7 @@ import os
 import ancpbids
 import json
 import csv
+import configparser
 import datetime as dt
 import html
 from prompt_toolkit.shortcuts import checkboxlist_dialog
@@ -156,12 +157,12 @@ def _ensure_megqc_output_layout(
 
     We keep ANCPBIDS for input discovery/querying but write consolidated subject
     reports as plain HTML files. This helper guarantees the target derivative
-    layout exists (``derivatives/Meg_QC/reports``) and creates a lightweight
+    layout exists (``derivatives/MEEGqc/reports``) and creates a lightweight
     ``dataset_description.json`` when missing.
     """
 
     analysis_segments = analysis_segments or []
-    megqc_root = Path(output_derivatives_root) / "Meg_QC"
+    megqc_root = Path(output_derivatives_root) / "MEEGqc"
     for seg in analysis_segments:
         megqc_root = megqc_root / str(seg)
     reports_root = megqc_root / "reports"
@@ -264,14 +265,17 @@ def _detect_available_channel_types(calculation_dir: str = None) -> list:
 
     found_types = set()
 
-    # Strategy 1: Check filename patterns like _mag_meg.tsv, _grad_meg.tsv, _eeg_eeg.tsv
+    # Strategy 1: detect the sensor type from per-channel-type derivative names.
+    # The BIDS-valid desc embeds it in CamelCase (e.g. ..._desc-PSDwavesMag_meg.tsv
+    # -> "mag_meg.tsv"); the second branch keeps recognising the historical
+    # underscore style (..._desc-relative_ampl_mag_meg.tsv -> "_mag_").
     for tsv in calc_path.rglob("*.tsv"):
         name = tsv.name.lower()
-        if "_mag_" in name or name.endswith("_mag.tsv"):
+        if _re.search(r"mag_(meg|eeg)\.tsv$", name) or "_mag_" in name:
             found_types.add("mag")
-        if "_grad_" in name or name.endswith("_grad.tsv"):
+        if _re.search(r"grad_(meg|eeg)\.tsv$", name) or "_grad_" in name:
             found_types.add("grad")
-        if "_eeg_" in name or name.endswith("_eeg.tsv"):
+        if name.endswith("_eeg.tsv") or "_eeg_" in name:
             found_types.add("eeg")
 
     # Strategy 2: If filenames didn't help, read Type column from a Sensors/STDs TSV
@@ -639,24 +643,29 @@ def _human_derivative_tab_label(metric_key: str, raw_name: str) -> str:
 
     if name_l == "sensors_positions":
         return "Channel layout (3D)"
+    if name_l == "sensors_positions_2d":
+        return "Channel layout (2D)"
+
+    # Flattened topomaps embed the "2d" token; 3D ones do not.
+    _dim = "2D" if "2d" in name_l else "3D"
 
     if "std" in metric_l:
         if "per_channel" in name_l:
             return "Channel x epoch heatmap"
         if "topomap" in name_l:
-            return "Channel-wise STD topomap (3D)"
+            return f"Channel-wise STD topomap ({_dim})"
         if "all_data" in name_l:
             return "Channel-wise STD distribution"
     if "ptp" in metric_l:
         if "per_channel" in name_l:
             return "Channel x epoch heatmap"
         if "topomap" in name_l:
-            return "Channel-wise PtP topomap (3D)"
+            return f"Channel-wise PtP topomap ({_dim})"
         if "all_data" in name_l:
             return "Channel-wise PtP distribution"
     if "psd" in metric_l:
         if "topomap" in name_l:
-            return "Channel-wise PSD topomap (3D)"
+            return f"Channel-wise PSD topomap ({_dim})"
         if "all_data" in name_l:
             return "PSD curves by channel"
         if "noise" in name_l:
@@ -665,7 +674,7 @@ def _human_derivative_tab_label(metric_key: str, raw_name: str) -> str:
             return "Relative power (canonical bands)"
     if "ecg" in metric_l:
         if "topomap" in name_l:
-            return "Channel-wise ECG topomap (3D)"
+            return f"Channel-wise ECG topomap ({_dim})"
         if "mean_ch_data" in name_l:
             return "ECG channel waveform"
         if "most_affected" in name_l:
@@ -676,7 +685,7 @@ def _human_derivative_tab_label(metric_key: str, raw_name: str) -> str:
             return "Lowest correlation-magnitude channels"
     if "eog" in metric_l:
         if "topomap" in name_l:
-            return "Channel-wise EOG topomap (3D)"
+            return f"Channel-wise EOG topomap ({_dim})"
         if "mean_ch_data" in name_l:
             return "EOG channel waveform"
         if "most_affected" in name_l:
@@ -719,7 +728,13 @@ def _collect_run_sensor_derivatives(derivs_for_this_raw: Sequence["Deriv_to_plot
             except Exception:
                 figs = []
             if figs:
-                return figs, [path]
+                # Pair the 3D geometry with its flattened (2D) counterpart so
+                # both appear as adjacent tabs in the Overview sensor panel.
+                try:
+                    figs_2d = plot_sensors_2d_csv(path)
+                except Exception:
+                    figs_2d = []
+                return figs + figs_2d, [path]
     return [], []
 
 
@@ -1341,28 +1356,38 @@ def _build_subject_overview_section(
             src_html = f"<details><summary>Sources</summary><ul>{src_items}</ul></details>"
 
         if embedded_eeg_note and len(derivs) > 1:
-            # Separate sensor plots into MEG and EEG subtabs
+            # Separate sensor plots into MEG and EEG subtabs; within each, the
+            # 3D and 2D layouts become adjacent plot subtabs.
             meg_sensor_derivs = [d for d in derivs if _infer_derivative_channel_type(d) in ("MAG", "GRAD", "ALL")]
             eeg_sensor_derivs = [d for d in derivs if _infer_derivative_channel_type(d) == "EEG"]
             ch_type_tabs: List[Tuple[str, str]] = []
             if meg_sensor_derivs:
-                ch_type_tabs.append(("MEG sensors", "".join(_plot_block_from_derivative(d) for d in meg_sensor_derivs)))
+                ch_type_tabs.append(("MEG sensors", _build_derivative_plot_tabs(
+                    group_id=f"overview-sensors-meg-{_sanitize_token(run_label)}",
+                    metric_key="SENSORS", derivatives=meg_sensor_derivs, level=4)))
             if eeg_sensor_derivs:
-                ch_type_tabs.append(("EEG sensors", "".join(_plot_block_from_derivative(d) for d in eeg_sensor_derivs)))
+                ch_type_tabs.append(("EEG sensors", _build_derivative_plot_tabs(
+                    group_id=f"overview-sensors-eeg-{_sanitize_token(run_label)}",
+                    metric_key="SENSORS", derivatives=eeg_sensor_derivs, level=4)))
             if not ch_type_tabs:
-                ch_type_tabs.append(("All sensors", "".join(_plot_block_from_derivative(d) for d in derivs)))
+                ch_type_tabs.append(("All sensors", _build_derivative_plot_tabs(
+                    group_id=f"overview-sensors-all-{_sanitize_token(run_label)}",
+                    metric_key="SENSORS", derivatives=derivs, level=4)))
             sensor_content = src_html + _build_subtabs_html(
                 f"overview-sensors-chtype-{_sanitize_token(run_label)}", ch_type_tabs, level=3
             )
         else:
-            sensor_blocks = "".join(_plot_block_from_derivative(d) for d in derivs)
-            sensor_content = src_html + sensor_blocks
+            # One plot subtab per layout (3D / 2D) so users can switch views.
+            sensor_content = src_html + _build_derivative_plot_tabs(
+                group_id=f"overview-sensors-{_sanitize_token(run_label)}",
+                metric_key="SENSORS", derivatives=derivs, level=3,
+            )
 
         sensor_tabs.append((run_label, sensor_content))
 
     if sensor_tabs:
         overview_html += (
-            "<h3>Sensor positions (3D, one panel per run)</h3>"
+            "<h3>Sensor positions (3D &amp; 2D, one panel per run)</h3>"
             "<p>Sensor geometry is shown once here to avoid repeating the same view under every metric tab.</p>"
             + _build_subtabs_html("overview-sensors-runs", sensor_tabs, level=2)
         )
@@ -1483,17 +1508,17 @@ def _resolve_analysis_root_from_artifact(artifact_path: str) -> Optional[Path]:
     """Resolve the MEGqc analysis root from one derivative artifact path.
 
     Supports both layouts:
-    - legacy: ``.../derivatives/Meg_QC/...``
-    - profile: ``.../derivatives/Meg_QC/profiles/<analysis_id>/...``
+    - legacy: ``.../derivatives/MEEGqc/...``
+    - profile: ``.../derivatives/MEEGqc/profiles/<analysis_id>/...``
     """
     if not artifact_path:
         return None
     p = Path(artifact_path)
     parts = p.parts
-    if "Meg_QC" not in parts:
+    if "MEEGqc" not in parts:
         return None
 
-    idx = max(i for i, seg in enumerate(parts) if seg == "Meg_QC")
+    idx = max(i for i, seg in enumerate(parts) if seg == "MEEGqc")
     root = Path(*parts[: idx + 1])
     if idx + 2 < len(parts) and parts[idx + 1] == "profiles":
         return root / "profiles" / parts[idx + 2]
@@ -1522,18 +1547,15 @@ def _collect_subject_gqi_task_rows(
         if not group_metrics_dir.exists():
             continue
 
-        # Collect GQI TSVs from per-modality subdirs first, then legacy root
+        # Collect GQI TSVs from the per-modality subdirs.
         _gqi_tsv_paths: list = []
         for subdir in ("meg", "eeg"):
             d = group_metrics_dir / subdir
             if d.is_dir():
-                _gqi_tsv_paths.extend(d.glob("Global_Quality_Index_attempt_*.tsv"))
-        # Fallback: legacy combined files in root group_metrics/
-        if not _gqi_tsv_paths:
-            _gqi_tsv_paths = list(group_metrics_dir.glob("Global_Quality_Index_attempt_*.tsv"))
+                _gqi_tsv_paths.extend(d.glob("*GlobalQualityIndexAttempt*.tsv"))
 
         for tsv_path in sorted(_gqi_tsv_paths):
-            match = re.search(r"attempt_(\d+)", tsv_path.name)
+            match = re.search(r"Attempt(\d+)", tsv_path.name)
             if not match:
                 continue
             attempt = int(match.group(1))
@@ -1632,7 +1654,7 @@ def _build_subject_gqi_metric_panel(rows: List[Dict[str, Any]]) -> str:
         "<div class='overview-card'>"
         "<h3>Global Quality Index (GQI)</h3>"
         "<p>Task-level rows discovered from "
-        "<code>summary_reports/group_metrics/{meg,eeg}/Global_Quality_Index_attempt_&lt;n&gt;_{meg,eeg}.tsv</code>. "
+        "<code>summary_reports/group_metrics/{meg,eeg}/desc-GlobalQualityIndexAttempt&lt;n&gt;_{meg,eeg}.tsv</code>. "
         "Values shown are filtered for this subject.</p>"
         f"{table_html}"
         f"{sources_details}"
@@ -1935,6 +1957,35 @@ def _build_subject_qc_metric_run_panel(
     return "".join(blocks)
 
 
+def _megqc_version() -> str:
+    """Return the installed MEEGqc package version (best effort)."""
+    try:
+        import meg_qc
+        return str(getattr(meg_qc, "__version__", "unknown"))
+    except Exception:
+        return "unknown"
+
+
+def _build_settings_snapshot_section(config_dir: Optional[Path]) -> str:
+    """Render the Settings tab via the shared snapshot renderer.
+
+    The implementation lives in ``universal_plots`` so the subject, QA dataset, QC
+    group and multi-dataset reports all produce the same elegant, self-contained
+    snapshot from each profile's ``*UsedSettings*.ini`` file.
+    """
+    from meg_qc.plotting.universal_plots import (
+        resolve_used_settings_path,
+        parse_ini_settings_to_sections,
+        build_settings_tab_html,
+    )
+    settings_path = resolve_used_settings_path(config_dir)
+    snapshot = parse_ini_settings_to_sections(settings_path)
+    return build_settings_tab_html(
+        [(None, snapshot)],
+        intro="These are the exact parameters used to compute this report.",
+    )
+
+
 def _build_subject_report_html(
     *,
     subject: str,
@@ -1943,6 +1994,7 @@ def _build_subject_report_html(
     overview_payload: List[Dict[str, Any]],
     summary_payload: List[Dict[str, Any]],
     embedded_eeg_note: bool = False,
+    config_dir: Optional[Path] = None,
 ) -> str:
     """Compose one self-contained subject report.
 
@@ -1959,6 +2011,7 @@ def _build_subject_report_html(
     _reset_lazy_figure_store()
 
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    megqc_version = _megqc_version()
     top_tabs: List[Tuple[str, str]] = [
         (
             "Overview",
@@ -2012,6 +2065,13 @@ def _build_subject_report_html(
         )
     )
 
+    top_tabs.append(
+        (
+            "Settings",
+            _build_settings_snapshot_section(config_dir),
+        )
+    )
+
     tab_buttons = []
     tab_panels = []
     for idx, (label, panel_html) in enumerate(top_tabs):
@@ -2024,6 +2084,7 @@ def _build_subject_report_html(
 
     plotly_bundle_script = _inline_plotly_bundle_script()
     lazy_payload_scripts = _lazy_payload_script_tags_html()
+    from meg_qc.plotting.universal_plots import SETTINGS_TAB_CSS as settings_css
 
     return f"""
 <!DOCTYPE html>
@@ -2031,7 +2092,7 @@ def _build_subject_report_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Subject QA report sub-{html.escape(subject)}</title>
+  <title>MEEGqc subject report sub-{html.escape(subject)}</title>
   {plotly_bundle_script}
   <style>
     body {{
@@ -2276,6 +2337,7 @@ def _build_subject_report_html(
     @keyframes spin {{
       to {{ transform: rotate(360deg); }}
     }}
+{settings_css}
   </style>
 </head>
 <body>
@@ -2288,8 +2350,8 @@ def _build_subject_report_html(
   </div>
   <main>
     <section>
-      <h1>MEG QC subject report</h1>
-      <p><strong>Dataset:</strong> {html.escape(dataset_name)} | <strong>Subject:</strong> sub-{html.escape(subject)} | <strong>Generated:</strong> {generated}</p>
+      <h1>MEEGqc subject report</h1>
+      <p><strong>Dataset:</strong> {html.escape(dataset_name)} | <strong>Subject:</strong> sub-{html.escape(subject)} | <strong>Generated:</strong> {generated} | <strong>MEEGqc version:</strong> {html.escape(megqc_version)}</p>
       <p>This report consolidates all metrics into one HTML file. Figures are lazily rendered when their tab becomes visible.</p>
       <div class="tab-row">
         {''.join(tab_buttons)}
@@ -2823,7 +2885,7 @@ def _write_subject_metric_log(
     }
 
     txt_lines = [
-        f"MEGqc Metric Log -- sub-{subject}",
+        f"MEEGqc Metric Log -- sub-{subject}",
         f"Generated: {generated}",
         f"Modalities: MEG={'yes' if has_meg else 'no'}, EEG={'yes' if has_eeg else 'no'}",
         f"Summary: {n_ok} OK, {n_warn} warnings, {n_err} errors, {n_skip} skipped ({len(metric_log)} total)",
@@ -2882,6 +2944,9 @@ def process_subject(
         output_derivatives_root,
         analysis_segments=analysis_segments,
     )
+    # Settings snapshots are saved under ``<megqc_root>/config`` by the
+    # calculation step; reports_root is ``<megqc_root>/reports``.
+    config_dir = Path(reports_root).parent / "config"
 
     # Sort run keys for deterministic tab ordering.
     existing_raws_per_sub = sorted(set(
@@ -3136,10 +3201,11 @@ def process_subject(
             overview_payload=meg_overview,
             summary_payload=meg_summary,
             embedded_eeg_note=meg_has_embedded_eeg,
+            config_dir=config_dir,
         )
         meg_folder = reports_root / "meg" / f"sub-{sub}"
         meg_folder.mkdir(parents=True, exist_ok=True)
-        meg_path = meg_folder / f"sub-{sub}_desc-subject_qa_report_meg.html"
+        meg_path = meg_folder / f"sub-{sub}_desc-subjectQaReport_meg.html"
         meg_path.write_text(meg_html, encoding="utf-8")
         report_output_folders.append(meg_folder)
 
@@ -3158,10 +3224,11 @@ def process_subject(
             metrics_payload=eeg_payload,
             overview_payload=eeg_overview,
             summary_payload=eeg_summary,
+            config_dir=config_dir,
         )
         eeg_folder = reports_root / "eeg" / f"sub-{sub}"
         eeg_folder.mkdir(parents=True, exist_ok=True)
-        eeg_path = eeg_folder / f"sub-{sub}_desc-subject_qa_report_eeg.html"
+        eeg_path = eeg_folder / f"sub-{sub}_desc-subjectQaReport_eeg.html"
         eeg_path.write_text(eeg_html, encoding="utf-8")
         report_output_folders.append(eeg_folder)
 
@@ -3174,10 +3241,11 @@ def process_subject(
             metrics_payload=metrics_payload,
             overview_payload=overview_payload,
             summary_payload=summary_payload,
+            config_dir=config_dir,
         )
         subject_folder = reports_root / f"sub-{sub}"
         subject_folder.mkdir(parents=True, exist_ok=True)
-        report_path = subject_folder / f"sub-{sub}_desc-subject_qa_report_meg.html"
+        report_path = subject_folder / f"sub-{sub}_desc-subjectQaReport_meg.html"
         report_path.write_text(report_html, encoding="utf-8")
         report_output_folders.append(subject_folder)
 
@@ -3235,12 +3303,12 @@ def make_plots_meg_qc(
     output_derivatives_root = os.path.join(output_root, "derivatives")
 
     # Query derivatives source:
-    # - Prefer external derivatives tree when it already contains Meg_QC
+    # - Prefer external derivatives tree when it already contains MEEGqc
     #   calculations (useful for fully external pipelines).
     # - Otherwise fall back to derivatives inside the input dataset, while
     #   still writing reports into ``output_root``.
     source_derivatives_root = output_derivatives_root
-    calc_rel = os.path.join('Meg_QC', *analysis_segments, 'calculation')
+    calc_rel = os.path.join('MEEGqc', *analysis_segments, 'calculation')
     if not os.path.isdir(os.path.join(source_derivatives_root, calc_rel)):
         source_derivatives_root = dataset_derivatives_root
 
@@ -3251,7 +3319,7 @@ def make_plots_meg_qc(
 
     # When derivatives are at an external location, load ANCPBIDS directly from
     # output_root rather than building a symlink overlay.  output_root already
-    # contains derivatives/Meg_QC/calculation/ (written by the calculation step),
+    # contains derivatives/MEEGqc/calculation/ (written by the calculation step),
     # so a fresh load_dataset() scan will find all TSV/JSON files there natively.
     #
     # Advantages over the old symlink-overlay approach:
@@ -3267,7 +3335,7 @@ def make_plots_meg_qc(
         print(f"___MEGqc___: External output detected. Loading ANCPBIDS from output_root: {output_root}")
 
     calculated_derivs_folder = os.path.join(
-        'derivatives', 'Meg_QC', *analysis_segments, 'calculation'
+        'derivatives', 'MEEGqc', *analysis_segments, 'calculation'
     )
 
     # Create output derivative folders once before subject-parallel processing.

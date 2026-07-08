@@ -53,8 +53,8 @@ def _timestamp_analysis_id() -> str:
 
 PROFILE_MODE_HELP = (
     "Analysis profile routing mode.\n"
-    "  legacy: use classic path derivatives/Meg_QC (no profile).\n"
-    "  new: create/use a profile under derivatives/Meg_QC/profiles/<analysis_id>.\n"
+    "  legacy: use classic path derivatives/MEEGqc (no profile).\n"
+    "  new: create/use a profile under derivatives/MEEGqc/profiles/<analysis_id>.\n"
     "       If --analysis_id is omitted during calculation, one is auto-generated.\n"
     "       For plotting/GQI, 'new' is read-only only when --analysis_id is provided\n"
     "       (internally mapped to reuse).\n"
@@ -218,7 +218,7 @@ def run_calculation_dispatch(
         raise ValueError("No dataset paths provided for calculation.")
     if analysis_mode == "legacy":
         logger(
-            "[Calculation] analysis_mode='legacy' writes into derivatives/Meg_QC. "
+            "[Calculation] analysis_mode='legacy' writes into derivatives/MEEGqc. "
             "Use profile mode (new/reuse/latest) for sensitivity-analysis runs."
         )
 
@@ -271,29 +271,29 @@ def run_calculation_dispatch(
 def _normalize_plot_modes(
     *,
     qa_subject: bool = False,
-    qa_group: bool = False,
-    qa_multisample: bool = False,
-    qc_group: bool = False,
-    qc_multisample: bool = False,
+    qa_dataset: bool = False,
+    qa_multi_dataset: bool = False,
+    qc_dataset: bool = False,
+    qc_multi_dataset: bool = False,
     qa_all: bool = False,
     qc_all: bool = False,
     all_modes: bool = False,
 ) -> Dict[str, bool]:
     if qa_all or all_modes:
         qa_subject = True
-        qa_group = True
-        qa_multisample = True
+        qa_dataset = True
+        qa_multi_dataset = True
     if qc_all or all_modes:
-        qc_group = True
-        qc_multisample = True
-    if not any([qa_subject, qa_group, qa_multisample, qc_group, qc_multisample]):
+        qc_dataset = True
+        qc_multi_dataset = True
+    if not any([qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset]):
         qa_subject = True
     return {
         "qa_subject": bool(qa_subject),
-        "qa_group": bool(qa_group),
-        "qa_multisample": bool(qa_multisample),
-        "qc_group": bool(qc_group),
-        "qc_multisample": bool(qc_multisample),
+        "qa_dataset": bool(qa_dataset),
+        "qa_multi_dataset": bool(qa_multi_dataset),
+        "qc_dataset": bool(qc_dataset),
+        "qc_multi_dataset": bool(qc_multi_dataset),
     }
 
 
@@ -301,50 +301,50 @@ def validate_plot_request(
     *,
     dataset_paths: Sequence[str],
     qa_subject: bool,
-    qa_group: bool,
-    qa_multisample: bool,
-    qc_group: bool,
-    qc_multisample: bool,
+    qa_dataset: bool,
+    qa_multi_dataset: bool,
+    qc_dataset: bool,
+    qc_multi_dataset: bool,
     input_tsv: Optional[str],
     output_report: Optional[str],
 ) -> None:
     n_datasets = len(dataset_paths)
     if n_datasets < 1:
         raise ValueError("At least one dataset is required in --inputdata.")
-    if qa_multisample and n_datasets < 2:
-        raise ValueError("--qa-multisample requires at least two datasets in --inputdata.")
-    if qc_multisample and n_datasets < 2:
-        raise ValueError("--qc-multisample requires at least two datasets in --inputdata.")
+    if qa_multi_dataset and n_datasets < 2:
+        raise ValueError("--qa-multi-dataset requires at least two datasets in --inputdata.")
+    if qc_multi_dataset and n_datasets < 2:
+        raise ValueError("--qc-multi-dataset requires at least two datasets in --inputdata.")
 
     if input_tsv:
-        if not qc_group:
-            raise ValueError("--input_tsv is only valid with --qc-group.")
+        if not qc_dataset:
+            raise ValueError("--input_tsv is only valid with --qc-dataset.")
         if n_datasets != 1:
-            raise ValueError("--input_tsv is only valid with --qc-group and a single dataset.")
-        if qc_multisample:
-            raise ValueError("--input_tsv cannot be combined with --qc-multisample.")
+            raise ValueError("--input_tsv is only valid with --qc-dataset and a single dataset.")
+        if qc_multi_dataset:
+            raise ValueError("--input_tsv cannot be combined with --qc-multi-dataset.")
 
     if output_report:
         enabled_modes = [
             ("qa_subject", qa_subject),
-            ("qa_group", qa_group),
-            ("qa_multisample", qa_multisample),
-            ("qc_group", qc_group),
-            ("qc_multisample", qc_multisample),
+            ("qa_dataset", qa_dataset),
+            ("qa_multi_dataset", qa_multi_dataset),
+            ("qc_dataset", qc_dataset),
+            ("qc_multi_dataset", qc_multi_dataset),
         ]
         enabled_count = sum(1 for _, on in enabled_modes if on)
         if enabled_count != 1:
             raise ValueError(
                 "--output_report is only allowed when exactly one plotting mode is selected."
             )
-        if qa_subject or qa_group:
+        if qa_subject or qa_dataset:
             raise ValueError(
-                "--output_report is not used by --qa-subject/--qa-group. "
-                "Use it with --qa-multisample, --qc-group, or --qc-multisample."
+                "--output_report is not used by --qa-subject/--qa-dataset. "
+                "Use it with --qa-multi-dataset, --qc-dataset, or --qc-multi-dataset."
             )
-        if qc_group and n_datasets != 1:
+        if qc_dataset and n_datasets != 1:
             raise ValueError(
-                "--output_report with --qc-group is only supported for a single dataset."
+                "--output_report with --qc-dataset is only supported for a single dataset."
             )
 
 
@@ -356,10 +356,10 @@ def run_plotting_dispatch(
     input_tsv: Optional[str] = None,
     njobs: int = 1,
     qa_subject: bool = False,
-    qa_group: bool = False,
-    qa_multisample: bool = False,
-    qc_group: bool = False,
-    qc_multisample: bool = False,
+    qa_dataset: bool = False,
+    qa_multi_dataset: bool = False,
+    qc_dataset: bool = False,
+    qc_multi_dataset: bool = False,
     qa_all: bool = False,
     qc_all: bool = False,
     all_modes: bool = False,
@@ -373,15 +373,29 @@ def run_plotting_dispatch(
     Returns the normalized mode dictionary used for execution.
     """
     from meg_qc.plotting.meg_qc_plots import make_plots_meg_qc
-    from meg_qc.plotting.meg_qc_group_plots import make_group_plots_meg_qc
-    from meg_qc.plotting.meg_qc_multi_sample_group_plots import make_multi_sample_group_plots_meg_qc
-    from meg_qc.plotting.meg_qc_group_qc_plots import (
-        make_group_qc_plots_meg_qc,
-        make_group_qc_plots_multi_meg_qc,
+    from meg_qc.plotting.meg_qc_dataset_plots import make_dataset_plots_meg_qc
+    from meg_qc.plotting.meg_qc_multi_dataset_plots import make_multi_dataset_plots_meg_qc
+    from meg_qc.plotting.meg_qc_dataset_qc_plots import (
+        make_dataset_qc_plots_meg_qc,
+        make_dataset_qc_plots_multi_meg_qc,
     )
-    from meg_qc.calculation.meg_qc_pipeline import resolve_analysis_root
+    from meg_qc.calculation.meg_qc_pipeline import (
+        resolve_analysis_root,
+        has_only_legacy_derivatives,
+        LEGACY_DERIVATIVES_HINT,
+    )
 
     ds_list = _normalize_dataset_paths(dataset_paths)
+
+    # Refuse to build reports from derivatives produced by an older MEEGqc
+    # version (old 'Meg_QC' folder / non-BIDS names): they are incompatible.
+    legacy_only = [d for d in ds_list if has_only_legacy_derivatives(d, derivatives_output)]
+    if legacy_only:
+        logger("___MEGqc___: " + LEGACY_DERIVATIVES_HINT)
+        for d in legacy_only:
+            logger(f"___MEGqc___:   legacy 'Meg_QC' derivatives found, re-run calculation for: {d}")
+        return {}
+
     effective_mode = analysis_mode
     effective_id = analysis_id
     if effective_mode == "legacy":
@@ -402,35 +416,35 @@ def run_plotting_dispatch(
             )
     modes = _normalize_plot_modes(
         qa_subject=qa_subject,
-        qa_group=qa_group,
-        qa_multisample=qa_multisample,
-        qc_group=qc_group,
-        qc_multisample=qc_multisample,
+        qa_dataset=qa_dataset,
+        qa_multi_dataset=qa_multi_dataset,
+        qc_dataset=qc_dataset,
+        qc_multi_dataset=qc_multi_dataset,
         qa_all=qa_all,
         qc_all=qc_all,
         all_modes=all_modes,
     )
     # "all"/preset modes should run everything that is valid for current input.
-    # For single-dataset runs, multisample modes are automatically disabled.
+    # For single-dataset runs, multi-dataset modes are automatically disabled.
     if len(ds_list) < 2:
-        if modes["qa_multisample"]:
-            logger("Skipping QA multisample mode: at least two datasets are required.")
-        if modes["qc_multisample"]:
-            logger("Skipping QC multisample mode: at least two datasets are required.")
-        modes["qa_multisample"] = False
-        modes["qc_multisample"] = False
+        if modes["qa_multi_dataset"]:
+            logger("Skipping QA multi-dataset mode: at least two datasets are required.")
+        if modes["qc_multi_dataset"]:
+            logger("Skipping QC multi-dataset mode: at least two datasets are required.")
+        modes["qa_multi_dataset"] = False
+        modes["qc_multi_dataset"] = False
     validate_plot_request(
         dataset_paths=ds_list,
         qa_subject=modes["qa_subject"],
-        qa_group=modes["qa_group"],
-        qa_multisample=modes["qa_multisample"],
-        qc_group=modes["qc_group"],
-        qc_multisample=modes["qc_multisample"],
+        qa_dataset=modes["qa_dataset"],
+        qa_multi_dataset=modes["qa_multi_dataset"],
+        qc_dataset=modes["qc_dataset"],
+        qc_multi_dataset=modes["qc_multi_dataset"],
         input_tsv=input_tsv,
         output_report=output_report,
     )
 
-    if not any([qa_subject, qa_group, qa_multisample, qc_group, qc_multisample, qa_all, qc_all, all_modes]):
+    if not any([qa_subject, qa_dataset, qa_multi_dataset, qc_dataset, qc_multi_dataset, qa_all, qc_all, all_modes]):
         logger("No QA/QC plotting mode selected; defaulting to --qa-subject.")
 
     for ds in ds_list:
@@ -458,10 +472,10 @@ def run_plotting_dispatch(
                 analysis_id=effective_id,
             )
 
-    if modes["qa_group"]:
+    if modes["qa_dataset"]:
         for ds in ds_list:
-            logger(f"Running QA group plotting for dataset: {ds}")
-            make_group_plots_meg_qc(
+            logger(f"Running QA plotting for dataset: {ds}")
+            make_dataset_plots_meg_qc(
                 ds,
                 derivatives_base=derivatives_output,
                 n_jobs=njobs,
@@ -469,10 +483,10 @@ def run_plotting_dispatch(
                 analysis_id=effective_id,
             )
 
-    if modes["qa_multisample"]:
-        logger("Running QA multisample plotting...")
+    if modes["qa_multi_dataset"]:
+        logger("Running QA multi-dataset plotting...")
         derivatives_bases = [derivatives_output] * len(ds_list) if derivatives_output else None
-        make_multi_sample_group_plots_meg_qc(
+        make_multi_dataset_plots_meg_qc(
             dataset_paths=ds_list,
             derivatives_bases=derivatives_bases,
             output_report_path=output_report,
@@ -481,10 +495,10 @@ def run_plotting_dispatch(
             analysis_id=effective_id,
         )
 
-    if modes["qc_group"]:
+    if modes["qc_dataset"]:
         if len(ds_list) == 1:
-            logger(f"Running QC group plotting for dataset: {ds_list[0]}")
-            make_group_qc_plots_meg_qc(
+            logger(f"Running QC plotting for dataset: {ds_list[0]}")
+            make_dataset_qc_plots_meg_qc(
                 dataset_path=ds_list[0],
                 input_tsv=input_tsv,
                 output_html=output_report,
@@ -496,11 +510,11 @@ def run_plotting_dispatch(
         else:
             if input_tsv:
                 raise ValueError(
-                    "--input_tsv is not supported when --qc-group is used with multiple datasets."
+                    "--input_tsv is not supported when --qc-dataset is used with multiple datasets."
                 )
             for ds in ds_list:
-                logger(f"Running QC group plotting for dataset: {ds}")
-                make_group_qc_plots_meg_qc(
+                logger(f"Running QC plotting for dataset: {ds}")
+                make_dataset_qc_plots_meg_qc(
                     dataset_path=ds,
                     input_tsv=None,
                     output_html=None,
@@ -510,9 +524,9 @@ def run_plotting_dispatch(
                     analysis_id=effective_id,
                 )
 
-    if modes["qc_multisample"]:
-        logger("Running QC multisample plotting...")
-        make_group_qc_plots_multi_meg_qc(
+    if modes["qc_multi_dataset"]:
+        logger("Running QC multi-dataset plotting...")
+        make_dataset_qc_plots_multi_meg_qc(
             dataset_paths=ds_list,
             output_html=output_report,
             attempt=attempt,
@@ -692,11 +706,11 @@ def run_megqc():
     )
     # Reuse plotting-scope semantics for --run-all.
     dataset_path_parser.add_argument("--qa-subject", action="store_true", help="Run subject-level QA plotting after --run-all.")
-    dataset_path_parser.add_argument("--qa-group", action="store_true", help="Run dataset-level QA group plotting after --run-all.")
-    dataset_path_parser.add_argument("--qa-multisample", action="store_true", help="Run QA multisample plotting after --run-all.")
+    dataset_path_parser.add_argument("--qa-dataset", action="store_true", help="Run dataset-level QA plotting after --run-all.")
+    dataset_path_parser.add_argument("--qa-multi-dataset", action="store_true", help="Run QA multi-dataset plotting after --run-all.")
     dataset_path_parser.add_argument("--qa-all", action="store_true", help="Enable all QA plotting scopes after --run-all.")
-    dataset_path_parser.add_argument("--qc-group", action="store_true", help="Run QC group plotting after --run-all.")
-    dataset_path_parser.add_argument("--qc-multisample", action="store_true", help="Run QC multisample plotting after --run-all.")
+    dataset_path_parser.add_argument("--qc-dataset", action="store_true", help="Run QC dataset plotting after --run-all.")
+    dataset_path_parser.add_argument("--qc-multi-dataset", action="store_true", help="Run QC multi-dataset plotting after --run-all.")
     dataset_path_parser.add_argument("--qc-all", action="store_true", help="Enable all QC plotting scopes after --run-all.")
     dataset_path_parser.add_argument("--all", action="store_true", help="Enable all QA+QC plotting scopes after --run-all.")
 
@@ -740,10 +754,10 @@ def run_megqc():
         # If no explicit scope flags are provided, execute all QA+QC scopes.
         requested_any_scope = any([
             args.qa_subject,
-            args.qa_group,
-            args.qa_multisample,
-            args.qc_group,
-            args.qc_multisample,
+            args.qa_dataset,
+            args.qa_multi_dataset,
+            args.qc_dataset,
+            args.qc_multi_dataset,
             args.qa_all,
             args.qc_all,
             args.all,
@@ -767,10 +781,10 @@ def run_megqc():
             interactive_prompts=False,
             keep_temp_on_error=args.keep_temp_on_error,
             qa_subject=args.qa_subject,
-            qa_group=args.qa_group,
-            qa_multisample=args.qa_multisample,
-            qc_group=args.qc_group,
-            qc_multisample=args.qc_multisample,
+            qa_dataset=args.qa_dataset,
+            qa_multi_dataset=args.qa_multi_dataset,
+            qc_dataset=args.qc_dataset,
+            qc_multi_dataset=args.qc_multi_dataset,
             qa_all=args.qa_all,
             qc_all=args.qc_all,
             all_modes=(args.all or not requested_any_scope),
@@ -799,7 +813,7 @@ def run_megqc():
     )
 
     for dataset_path in _normalize_dataset_paths(args.inputdata):
-        print(f"Results are available under: {dataset_path}/derivatives/Meg_QC/calculation")
+        print(f"Results are available under: {dataset_path}/derivatives/MEEGqc/calculation")
 
 
 def get_config():
@@ -846,7 +860,7 @@ def get_plots():
     Unified plotting entry point for QA/QC report generation.
 
     This command supports explicit QA and QC modes with one-shot execution.
-    It can run subject-level, group-level, and multi-sample reports depending
+    It can run subject-level, dataset-level, and multi-dataset reports depending
     on provided flags and number of datasets.
     """
     cmd = _invocation_name("run-megqc-plotting")
@@ -854,18 +868,18 @@ def get_plots():
         description=(
             f"MEEGqc plotting dispatcher for QA/QC reports.\n\n"
             f"Use explicit flags to choose report scope:\n"
-            f"  QA flags: --qa-subject, --qa-group, --qa-multisample, --qa-all\n"
-            f"  QC flags: --qc-group, --qc-multisample, --qc-all\n"
+            f"  QA flags: --qa-subject, --qa-dataset, --qa-multi-dataset, --qa-all\n"
+            f"  QC flags: --qc-dataset, --qc-multi-dataset, --qc-all\n"
             f"  Combined: --all (runs QA+QC in one shot)\n\n"
             f"Examples:\n"
             f"  Subject QA (single dataset):\n"
             f"    {cmd} --inputdata /path/ds --qa-subject\n\n"
             f"  Group QA (single dataset):\n"
-            f"    {cmd} --inputdata /path/ds --qa-group\n\n"
+            f"    {cmd} --inputdata /path/ds --qa-dataset\n\n"
             f"  Multi-sample QA (2+ datasets):\n"
-            f"    {cmd} --inputdata /path/ds1 /path/ds2 --qa-multisample\n\n"
+            f"    {cmd} --inputdata /path/ds1 /path/ds2 --qa-multi-dataset\n\n"
             f"  Group QC with selected attempt:\n"
-            f"    {cmd} --inputdata /path/ds --qc-group --attempt 2\n\n"
+            f"    {cmd} --inputdata /path/ds --qc-dataset --attempt 2\n\n"
             f"  All QA+QC reports (one shot):\n"
             f"    {cmd} --inputdata /path/ds1 /path/ds2 --all"
         ),
@@ -906,8 +920,8 @@ def get_plots():
         required=False,
         help=(
             "Optional explicit output HTML path. Allowed only when exactly one "
-            "single-report mode is selected: --qa-multisample, --qc-group, "
-            "or --qc-multisample."
+            "single-report mode is selected: --qa-multi-dataset, --qc-dataset, "
+            "or --qc-multi-dataset."
         ),
     )
     dataset_path_parser.add_argument(
@@ -916,7 +930,7 @@ def get_plots():
         required=False,
         help=(
             "QC only: attempt number used to select "
-            "Global_Quality_Index_attempt_<n>.tsv when --input_tsv is not given."
+            "desc-GlobalQualityIndexAttempt<n>_<meg|eeg>.tsv when --input_tsv is not given."
         ),
     )
     dataset_path_parser.add_argument(
@@ -924,8 +938,8 @@ def get_plots():
         type=str,
         required=False,
         help=(
-            "QC only: explicit Global_Quality_Index_attempt_*.tsv path. "
-            "Allowed only with --qc-group and a single dataset."
+            "QC only: explicit desc-GlobalQualityIndexAttempt*_*.tsv path. "
+            "Allowed only with --qc-dataset and a single dataset."
         ),
     )
     dataset_path_parser.add_argument(
@@ -942,14 +956,14 @@ def get_plots():
         help="Run subject-level QA plotting for each selected dataset.",
     )
     dataset_path_parser.add_argument(
-        "--qa-group",
+        "--qa-dataset",
         action="store_true",
-        help="Run dataset-level QA group report for each selected dataset.",
+        help="Run dataset-level QA report for each selected dataset.",
     )
     dataset_path_parser.add_argument(
-        "--qa-multisample",
+        "--qa-multi-dataset",
         action="store_true",
-        help="Run one multi-sample QA report across selected datasets (requires >=2 datasets).",
+        help="Run one multi-dataset QA report across selected datasets (requires >=2 datasets).",
     )
     dataset_path_parser.add_argument(
         "--qa-all",
@@ -957,7 +971,7 @@ def get_plots():
         help="Run all QA modes valid for the provided datasets.",
     )
     dataset_path_parser.add_argument(
-        "--qc-group",
+        "--qc-dataset",
         action="store_true",
         help=(
             "Run dataset-level QC report(s). For one dataset, uses --input_tsv "
@@ -965,9 +979,9 @@ def get_plots():
         ),
     )
     dataset_path_parser.add_argument(
-        "--qc-multisample",
+        "--qc-multi-dataset",
         action="store_true",
-        help="Run one multi-sample QC report across selected datasets (requires >=2 datasets).",
+        help="Run one multi-dataset QC report across selected datasets (requires >=2 datasets).",
     )
     dataset_path_parser.add_argument(
         "--qc-all",
@@ -990,10 +1004,10 @@ def get_plots():
             input_tsv=args.input_tsv,
             njobs=args.njobs,
             qa_subject=args.qa_subject,
-            qa_group=args.qa_group,
-            qa_multisample=args.qa_multisample,
-            qc_group=args.qc_group,
-            qc_multisample=args.qc_multisample,
+            qa_dataset=args.qa_dataset,
+            qa_multi_dataset=args.qa_multi_dataset,
+            qc_dataset=args.qc_dataset,
+            qc_multi_dataset=args.qc_multi_dataset,
             qa_all=args.qa_all,
             qc_all=args.qc_all,
             all_modes=args.all,
@@ -1017,11 +1031,23 @@ def run_gqi_dispatch(
 ) -> None:
     """Shared dispatcher for GQI regeneration over one or multiple datasets."""
     from meg_qc.calculation.metrics.summary_report_GQI import generate_gqi_summary
-    from meg_qc.calculation.meg_qc_pipeline import resolve_analysis_root
+    from meg_qc.calculation.meg_qc_pipeline import (
+        resolve_analysis_root,
+        has_only_legacy_derivatives,
+        LEGACY_DERIVATIVES_HINT,
+    )
 
     ds_list = _normalize_dataset_paths(dataset_paths)
     if not ds_list:
         raise ValueError("No dataset paths provided for GQI.")
+
+    legacy_only = [d for d in ds_list if has_only_legacy_derivatives(d, derivatives_output)]
+    if legacy_only:
+        logger("___MEGqc___: " + LEGACY_DERIVATIVES_HINT)
+        for d in legacy_only:
+            logger(f"___MEGqc___:   legacy 'Meg_QC' derivatives found, re-run calculation for: {d}")
+        return
+
     effective_mode = analysis_mode
     effective_id = analysis_id
     if effective_mode == "new":
@@ -1083,10 +1109,10 @@ def run_all_dispatch(
     interactive_prompts: bool = False,
     keep_temp_on_error: bool = False,
     qa_subject: bool = False,
-    qa_group: bool = False,
-    qa_multisample: bool = False,
-    qc_group: bool = False,
-    qc_multisample: bool = False,
+    qa_dataset: bool = False,
+    qa_multi_dataset: bool = False,
+    qc_dataset: bool = False,
+    qc_multi_dataset: bool = False,
     qa_all: bool = False,
     qc_all: bool = False,
     all_modes: bool = True,
@@ -1128,10 +1154,10 @@ def run_all_dispatch(
         derivatives_output=derivatives_output,
         njobs=plot_njobs,
         qa_subject=qa_subject,
-        qa_group=qa_group,
-        qa_multisample=qa_multisample,
-        qc_group=qc_group,
-        qc_multisample=qc_multisample,
+        qa_dataset=qa_dataset,
+        qa_multi_dataset=qa_multi_dataset,
+        qc_dataset=qc_dataset,
+        qc_multi_dataset=qc_multi_dataset,
         qa_all=qa_all,
         qc_all=qc_all,
         all_modes=all_modes,

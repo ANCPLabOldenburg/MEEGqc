@@ -13,7 +13,7 @@ import meg_qc.calculation.metrics.summary_report_GQI as gqi_module
 
 def test_group_table_includes_task_column(tmp_path, monkeypatch):
     derivatives_root = tmp_path / "derivatives"
-    calc_dir = derivatives_root / "Meg_QC" / "calculation" / "sub-01"
+    calc_dir = derivatives_root / "MEEGqc" / "calculation" / "sub-01"
     calc_dir.mkdir(parents=True)
 
     # Create a SimpleMetrics file that carries a task label in its name
@@ -44,10 +44,11 @@ def test_group_table_includes_task_column(tmp_path, monkeypatch):
 
     tsv_path = (
         derivatives_root
-        / "Meg_QC"
+        / "MEEGqc"
         / "summary_reports"
         / "group_metrics"
-        / "Global_Quality_Index_attempt_1.tsv"
+        / "meg"
+        / "desc-GlobalQualityIndexAttempt1_meg.tsv"
     )
 
     with open(tsv_path, encoding="utf-8") as f:

@@ -631,12 +631,12 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
         BIDS dataset root (currently used for logging/context only).
     megqc_root
         Root directory of one MEGqc analysis space. This is normally either:
-        - ``.../derivatives/Meg_QC`` (legacy mode), or
-        - ``.../derivatives/Meg_QC/profiles/<analysis_id>`` (profile mode).
+        - ``.../derivatives/MEEGqc`` (legacy mode), or
+        - ``.../derivatives/MEEGqc/profiles/<analysis_id>`` (profile mode).
 
         For backward compatibility, callers may still pass a derivatives root
         (``.../derivatives``). In that case the function auto-resolves
-        ``.../derivatives/Meg_QC``.
+        ``.../derivatives/MEEGqc``.
     config_file
         Settings INI path used to read ``[GlobalQualityIndex]`` parameters.
     """
@@ -646,10 +646,10 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
         return
     gqi_params = qc_params.get("GlobalQualityIndex")
 
-    # Accept both direct Meg_QC roots and legacy derivatives roots.
+    # Accept both direct MEEGqc roots and legacy derivatives roots.
     root = os.path.abspath(megqc_root)
-    if os.path.isdir(os.path.join(root, "Meg_QC")):
-        root = os.path.join(root, "Meg_QC")
+    if os.path.isdir(os.path.join(root, "MEEGqc")):
+        root = os.path.join(root, "MEEGqc")
 
     calc_dir = os.path.join(root, "calculation")
     reports_root = os.path.join(root, "summary_reports")
@@ -686,7 +686,9 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
             sub_dir = os.path.basename(os.path.dirname(json_path))
             out_sub = os.path.join(attempt_dir, sub_dir)
             os.makedirs(out_sub, exist_ok=True)
-            base = os.path.basename(json_path).replace("SimpleMetrics", f"GlobalSummaryReport_attempt{attempt}")
+            # BIDS entity labels must be alphanumeric, so the attempt is folded
+            # into the desc as CamelCase (GlobalSummaryReportAttempt<N>).
+            base = os.path.basename(json_path).replace("SimpleMetrics", f"GlobalSummaryReportAttempt{attempt}")
             out_json = os.path.join(out_sub, base)
             # Generate per-subject summary JSON (no HTML)
             create_summary_report(json_path, None, out_json, gqi_params)
@@ -729,16 +731,18 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
             df = df[cols]
         df.to_csv(filepath, sep="\t", index=False)
 
-    # Write per-modality tables (primary outputs)
+    # Write per-modality tables (primary outputs). Names are BIDS-valid: the
+    # description label is alphanumeric (GlobalQualityIndexAttempt<N>) followed
+    # by the modality suffix and .tsv extension.
     if meg_rows:
         meg_group_dir = os.path.join(group_dir, "meg")
         os.makedirs(meg_group_dir, exist_ok=True)
-        _write_group_tsv(meg_rows, os.path.join(meg_group_dir, f"Global_Quality_Index_attempt_{attempt}_meg.tsv"))
+        _write_group_tsv(meg_rows, os.path.join(meg_group_dir, f"desc-GlobalQualityIndexAttempt{attempt}_meg.tsv"))
 
     if eeg_rows:
         eeg_group_dir = os.path.join(group_dir, "eeg")
         os.makedirs(eeg_group_dir, exist_ok=True)
-        _write_group_tsv(eeg_rows, os.path.join(eeg_group_dir, f"Global_Quality_Index_attempt_{attempt}_eeg.tsv"))
+        _write_group_tsv(eeg_rows, os.path.join(eeg_group_dir, f"desc-GlobalQualityIndexAttempt{attempt}_eeg.tsv"))
 
     # Save configuration used for this attempt
     config_dir = os.path.join(reports_root, "config")
@@ -748,8 +752,8 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
     src.read(config_file)
     if src.has_section("GlobalQualityIndex"):
         cfg["GlobalQualityIndex"] = src["GlobalQualityIndex"]
-    # Store the configuration used for reproducibility
-    with open(os.path.join(config_dir, f"global_quality_index_{attempt}.ini"), "w") as f:
+    # Store the configuration used for reproducibility (BIDS-valid name).
+    with open(os.path.join(config_dir, f"desc-GlobalQualityIndexAttempt{attempt}_settings.ini"), "w") as f:
         cfg.write(f)
 
     print(f"Attempt {attempt} completed. Reports saved to {attempt_dir}")

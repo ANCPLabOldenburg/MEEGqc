@@ -2,17 +2,16 @@
 
 This module builds dataset-level QA HTML reports from machine-readable outputs
 already produced by the MEGqc calculation step. It reads derivative TSV files
-from ``derivatives/Meg_QC/calculation`` and writes group-level HTML reports to
-``derivatives/Meg_QC/reports``.
+from ``derivatives/MEEGqc/calculation`` and writes dataset-level HTML reports to
+``derivatives/MEEGqc/reports``.
 
 Public entrypoint
 -----------------
-``make_group_plots_meg_qc(dataset_path, derivatives_base=None, n_jobs=1)``
+``make_dataset_plots_meg_qc(dataset_path, derivatives_base=None, n_jobs=1)``
 """
 
 from __future__ import annotations
 
-import configparser
 import datetime as dt
 import json
 import os
@@ -38,6 +37,8 @@ except Exception:
 
 import meg_qc
 from meg_qc.calculation.meg_qc_pipeline import resolve_analysis_root
+from meg_qc.plotting.topomap_2d import make_flat_topomap_figure, BLUE_RED_COLORSCALE
+from meg_qc.plotting.universal_plots import amplitude_scale_unit, _add_colormap_menu_3d
 
 
 MODULES = ("STD", "PTP", "PSD", "ECG", "EOG", "Muscle")
@@ -1498,7 +1499,17 @@ def plot_heatmap_sorted_channels_windows(
         }
 
     metric_short = "STD" if "std" in color_title.lower() else ("PtP" if "ptp" in color_title.lower() else color_title)
-    unit_short = "mixed pT" if "mixed" in color_title.lower() else ("pT" if "pt" in color_title.lower() else "")
+    _ct = color_title.lower()
+    if "mixed" in _ct:
+        unit_short = "mixed fT"
+    elif "ft/cm" in _ct:
+        unit_short = "fT/cm"
+    elif "ft" in _ct:
+        unit_short = "fT"
+    elif "µv" in _ct or "uv" in _ct:
+        unit_short = "µV"
+    else:
+        unit_short = ""
     side_title = f"{metric_short} ({unit_short})" if unit_short else str(metric_short)
     colorbar_title = str(metric_short)
 
@@ -1674,70 +1685,38 @@ def plot_topomap_if_available(
     title: str,
     color_title: str,
 ) -> Optional[go.Figure]:
+    """Render the classic flattened (nose-up) interpolated topomap.
+
+    Uses the shared 2D renderer (azimuthal projection of the 3D sensor
+    geometry + interpolated field + sensor markers) so group and subject
+    reports look identical. Falls back to the available 2D coordinates when
+    the layout carries no Z column.
+    """
     if payload is None:
         return None
     x = np.asarray(payload.layout.x, dtype=float).reshape(-1)
     y = np.asarray(payload.layout.y, dtype=float).reshape(-1)
+    z = getattr(payload.layout, "z", None)
+    z = None if z is None else np.asarray(z, dtype=float).reshape(-1)
     values = np.asarray(payload.values, dtype=float).reshape(-1)
-    n = min(x.size, y.size, values.size, len(payload.layout.names))
+    names = list(payload.layout.names)
+
+    n = min(x.size, y.size, values.size, len(names))
+    if z is not None:
+        n = min(n, z.size)
     if n < 3:
         return None
+    x, y, values, names = x[:n], y[:n], values[:n], names[:n]
+    if z is not None:
+        z = z[:n]
 
-    x = x[:n]
-    y = y[:n]
-    values = values[:n]
-    names = np.asarray(payload.layout.names[:n], dtype=object)
-
-    mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(values)
-    if np.sum(mask) < 3:
-        return None
-
-    # Spread overlapping points slightly so Elekta triplets (1 mag + 2 grad) remain visible.
-    x_plot = x[mask].copy()
-    y_plot = y[mask].copy()
-    v_plot = values[mask]
-    n_plot = names[mask]
-    xy_key = np.round(np.column_stack([x_plot, y_plot]), 6)
-    unique, inv = np.unique(xy_key, axis=0, return_inverse=True)
-    xrange = float(np.nanmax(x_plot) - np.nanmin(x_plot)) if x_plot.size else 1.0
-    yrange = float(np.nanmax(y_plot) - np.nanmin(y_plot)) if y_plot.size else 1.0
-    base_r = max(xrange, yrange) * 0.012
-    if not np.isfinite(base_r) or base_r <= 0:
-        base_r = 1e-3
-    for k in range(unique.shape[0]):
-        idx = np.where(inv == k)[0]
-        if idx.size <= 1:
-            continue
-        angles = np.linspace(0.0, 2.0 * np.pi, num=idx.size, endpoint=False)
-        x_plot[idx] += base_r * np.cos(angles)
-        y_plot[idx] += base_r * np.sin(angles)
-
-    fig = go.Figure(
-        go.Scatter(
-            x=x_plot,
-            y=y_plot,
-            mode="markers",
-            text=n_plot,
-            customdata=v_plot,
-            hovertemplate="%{text}<br>value=%{customdata:.3g}<extra></extra>",
-            marker={
-                "size": 11,
-                "color": v_plot,
-                "colorscale": "Viridis",
-                "showscale": True,
-                "colorbar": {"title": color_title},
-                "line": {"width": 0.5, "color": "#2F3E46"},
-            },
-        )
+    hover = [f"{nm}<br>value={v:.3g}" for nm, v in zip(names, values)]
+    return make_flat_topomap_figure(
+        x, y, z, values, names,
+        color_title=color_title,
+        title=title,
+        hovertext=hover,
     )
-    fig.update_layout(
-        title={"text": title, "x": 0.5},
-        template="plotly_white",
-        xaxis={"visible": False, "scaleanchor": "y", "scaleratio": 1},
-        yaxis={"visible": False},
-        margin={"l": 40, "r": 40, "t": 70, "b": 35},
-    )
-    return fig
 
 
 def _add_solid_cap_toggle_to_topomap_3d(
@@ -1918,7 +1897,10 @@ def plot_topomap_3d_if_available(
             marker={
                 "size": 9.5,
                 "color": vg_arr,
-                "colorscale": "Viridis",
+                # Match the subject report's default convention (high=red, low=blue);
+                # the colour-map dropdown added below lets users switch palettes.
+                "colorscale": BLUE_RED_COLORSCALE,
+                "reversescale": False,
                 "showscale": True,
                 "colorbar": {"title": color_title, "x": 0.95, "len": 0.82},
                 "line": {"width": 0.3, "color": "#2F3E46"},
@@ -1942,6 +1924,9 @@ def plot_topomap_3d_if_available(
         },
     )
     _add_solid_cap_toggle_to_topomap_3d(fig, xg_arr, yg_arr, zg_arr)
+    # The sensor markers are trace 0 (the cap mesh is added afterwards), so the
+    # colour-map dropdown restyles trace 0 — same controls as the subject report.
+    _add_colormap_menu_3d(fig, 0)
     return fig
 
 
@@ -2392,37 +2377,21 @@ def _topomap_blocks(
     return "".join(chunks)
 
 
-def _load_settings_snapshot(megqc_root: str) -> str:
-    """Load the latest MEGqc settings snapshot from one analysis root."""
-    config_dir = Path(megqc_root) / "config"
-    ini_files = sorted(config_dir.glob("*.ini"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not ini_files:
-        return "No settings snapshot file was found."
+def _load_settings_snapshot(megqc_root: str) -> dict:
+    """Structured, QA-safe snapshot of the settings used for this analysis.
 
-    chosen = ini_files[0]
-    cfg = configparser.ConfigParser()
-    cfg.read(chosen)
-
-    sections = ["default", "Epoching", "STD", "PTP_manual", "PSD", "ECG", "EOG", "Muscle"]
-    lines = [f"source={chosen}"]
-    disallowed_tokens = ("bad", "good", "reject", "flag", "exceed", "pass", "fail", "threshold")
-    for section in sections:
-        if section in cfg:
-            qa_safe_items = []
-            for key, value in cfg[section].items():
-                key_l = key.lower()
-                val_l = str(value).lower()
-                if any(tok in key_l for tok in disallowed_tokens):
-                    continue
-                if any(tok in val_l for tok in disallowed_tokens):
-                    continue
-                qa_safe_items.append(f"{key}={value}")
-            if qa_safe_items:
-                lines.append(f"[{section}] {', '.join(qa_safe_items)}")
-            else:
-                lines.append(f"[{section}] QA-safe settings view active")
-
-    return "\n".join(lines) if lines else f"source={chosen}"
+    Delegates to the shared renderer in ``universal_plots`` so the QA dataset (and
+    multi-dataset) reports show the same elegant card view as the subject report.
+    It parses *whatever* sections exist in the profile's ``*UsedSettings*.ini``
+    (future-proof) while hiding QC-threshold keys from the QA view.
+    """
+    from meg_qc.plotting.universal_plots import (
+        resolve_used_settings_path,
+        parse_ini_settings_to_sections,
+        QA_DISALLOWED_TOKENS,
+    )
+    settings_path = resolve_used_settings_path(Path(megqc_root) / "config")
+    return parse_ini_settings_to_sections(settings_path, disallowed_tokens=QA_DISALLOWED_TOKENS)
 
 
 def _summary_table_html(acc: ChTypeAccumulator) -> str:
@@ -2471,18 +2440,12 @@ def _summary_table_html(acc: ChTypeAccumulator) -> str:
     )
 
 
-def _paths_html(source_paths: set) -> str:
-    if not source_paths:
-        return "<p>No machine-readable derivatives were consumed.</p>"
-
-    paths = sorted(source_paths)
-    max_lines = 80
-    visible = paths[:max_lines]
-    hidden = max(0, len(paths) - max_lines)
-    items = "".join(f"<li><code>{p}</code></li>" for p in visible)
-    if hidden > 0:
-        items += f"<li>... {hidden} additional paths omitted for brevity.</li>"
-    return f"<ul>{items}</ul>"
+def _machine_readable_rows(tab_accumulators: Dict[str, "ChTypeAccumulator"]) -> List[str]:
+    """Union of machine-readable derivative paths consumed across all tabs."""
+    paths: set = set()
+    for acc in tab_accumulators.values():
+        paths |= set(getattr(acc, "source_paths", set()) or set())
+    return sorted(paths)
 
 
 def _plot_summary_distribution_recordings(
@@ -5373,8 +5336,6 @@ def _build_cohort_overview_section(acc: ChTypeAccumulator, amplitude_unit: str, 
         return (
             "<section><h2>Cohort QA overview</h2>"
             + _summary_table_html(acc)
-            + "<h3>Machine-readable derivatives used</h3>"
-            + _paths_html(acc.source_paths)
             + "</section>"
         )
 
@@ -5459,8 +5420,6 @@ def _build_cohort_overview_section(acc: ChTypeAccumulator, amplitude_unit: str, 
         + heatmap_tabs
         + "<h3>Top subject epoch profiles</h3>"
         + profile_tabs
-        + "<h3>Machine-readable derivatives used</h3>"
-        + _paths_html(acc.source_paths)
         + "</section>"
     )
 
@@ -6298,13 +6257,13 @@ def _build_statistical_appendix_section(acc: ChTypeAccumulator, amplitude_unit: 
 def _build_tab_content(tab_name: str, acc: ChTypeAccumulator, is_combined: bool) -> str:
     tab_token = re.sub(r"[^a-z0-9]+", "-", tab_name.lower())
     if is_combined:
-        amplitude_unit = "mixed pT-based MEG units (all channels)"
+        amplitude_unit = "mixed fT-based MEG units (all channels)"
     elif tab_name.upper() == "MAG":
-        amplitude_unit = "picoTesla (pT)"
+        amplitude_unit = "femtoTesla (fT)"
     elif tab_name.upper() == "EEG":
         amplitude_unit = "microVolts (µV)"
     else:
-        amplitude_unit = "picoTesla/m (pT/m)"
+        amplitude_unit = "femtoTesla/cm (fT/cm)"
 
     combined_notice = ""
     if is_combined:
@@ -6317,7 +6276,7 @@ def _build_tab_content(tab_name: str, acc: ChTypeAccumulator, is_combined: bool)
             "<h2>Combined Channel-Type Context</h2>"
             f"<p><strong>Per-type run counts:</strong> MAG={mag_rows}, GRAD={grad_rows}; <strong>N subjects:</strong> {n_subjects}.</p>"
             "<p><strong>Unit warning:</strong> The combined tab is cumulative across channel types (MAG + GRAD). "
-            "Amplitude metrics therefore mix pT and pT/m footprints. Use MAG and GRAD tabs for strict unit-specific interpretation.</p>"
+            "Amplitude metrics therefore mix fT and fT/cm footprints. Use MAG and GRAD tabs for strict unit-specific interpretation.</p>"
             "</section>"
         )
 
@@ -6343,9 +6302,10 @@ def _build_tab_content(tab_name: str, acc: ChTypeAccumulator, is_combined: bool)
 def _build_report_html(
     dataset_name: str,
     tab_accumulators: Dict[str, ChTypeAccumulator],
-    settings_snapshot: str,
+    settings_snapshot: dict,
 ) -> str:
     """Compose the self-contained HTML report (tabs + plots + client JS)."""
+    from meg_qc.plotting.universal_plots import build_settings_tab_html, SETTINGS_TAB_CSS as settings_css
     _reset_lazy_figure_store()
     generated = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     version = getattr(meg_qc, "__version__", "unknown")
@@ -6362,6 +6322,19 @@ def _build_report_html(
         tab_buttons.append(f"<button class='tab-btn{active_class}' data-target='{tab_id}'>{tab}</button>")
         content = _build_tab_content(tab, tab_accumulators[tab], is_combined=(tab == "Combined (mag+grad)"))
         tab_divs.append(f"<div id='{tab_id}' class='tab-content{active_class}'>{content}</div>")
+
+    # Dedicated Settings tab (snapshot + machine-readable input subsection),
+    # mirroring the subject report's layout.
+    settings_tab_id = f"tab-{len(available_tabs)}"
+    settings_content = build_settings_tab_html(
+        [(None, settings_snapshot)],
+        intro="The QA-safe parameters used to compute this report.",
+        machine_readable_rows=_machine_readable_rows(tab_accumulators),
+        machine_readable_intro="Run-level TSV derivatives consumed to build this report.",
+    )
+    tab_buttons.append(f"<button class='tab-btn' data-target='{settings_tab_id}'>Settings</button>")
+    tab_divs.append(f"<div id='{settings_tab_id}' class='tab-content'>{settings_content}</div>")
+
     lazy_payload_scripts = _lazy_payload_script_tags_html()
 
     return f"""
@@ -6370,7 +6343,7 @@ def _build_report_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>QA group report {dataset_name}</title>
+  <title>QA dataset report {dataset_name}</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     body {{
@@ -6743,6 +6716,7 @@ def _build_report_html(
     @keyframes spin {{
       to {{ transform: rotate(360deg); }}
     }}
+{settings_css}
   </style>
 </head>
 <body>
@@ -6757,14 +6731,12 @@ def _build_report_html(
     <section>
       <div class="report-header">
         <div>
-          <h1>QA group report: {dataset_name}</h1>
+          <h1>MEEGqc QA dataset report: {dataset_name}</h1>
           <p><strong>Generated:</strong> {generated}</p>
-          <p><strong>MEGqc version:</strong> {version}</p>
+          <p><strong>MEEGqc version:</strong> {version}</p>
           <p><strong>Epoch label:</strong> epochs</p>
         </div>
       </div>
-      <h3>Settings snapshot</h3>
-      <pre>{settings_snapshot}</pre>
       <p><strong>Important:</strong> Cohort QA overview combines global cohort footprints and subject-aware summaries; metric-level panels preserve recording identity in hover text.</p>
       <div class="report-tools">
         <button id="grid-toggle-btn" class="tool-btn active" type="button">Hide grids</button>
@@ -7337,6 +7309,9 @@ def _update_accumulator_for_loaded_run(
             continue  # MEG channel types inside an EEG recording → skip
 
         acc = acc_by_type[ch_type]
+        # Per-channel-type amplitude scaling to display units: mag -> fT, grad ->
+        # fT/cm (planar) or fT (axial), eeg -> µV. Replaces the old flat pT scale.
+        _amp_scale, _ = amplitude_scale_unit(ch_type)
         acc.run_count += 1
         if record.meta.subject != "n/a":
             acc.subjects.add(record.meta.subject)
@@ -7357,7 +7332,7 @@ def _update_accumulator_for_loaded_run(
         )
 
         if ch_type in std_data:
-            matrix = np.asarray(std_data[ch_type], dtype=float) * TESLA_TO_PICO
+            matrix = np.asarray(std_data[ch_type], dtype=float) * _amp_scale
             # Channel scalar summaries are used for distribution views.
             ch_summary_default_all = np.nanmedian(matrix, axis=1)
             ch_summary_mean_all = np.nanmean(matrix, axis=1)
@@ -7421,7 +7396,7 @@ def _update_accumulator_for_loaded_run(
             module_seen["STD"] = True
 
         if ch_type in ptp_data:
-            matrix = np.asarray(ptp_data[ch_type], dtype=float) * TESLA_TO_PICO
+            matrix = np.asarray(ptp_data[ch_type], dtype=float) * _amp_scale
             ch_summary_default_all = np.nanquantile(matrix, 0.95, axis=1)
             ch_summary_mean_all = np.nanmean(matrix, axis=1)
             ch_summary_upper_all = np.nanquantile(matrix, 0.99, axis=1)
@@ -7982,7 +7957,7 @@ def _build_accumulators_for_runs(
     return acc_by_type
 
 
-def make_group_plots_meg_qc(
+def make_dataset_plots_meg_qc(
     dataset_path: str,
     derivatives_base: Optional[str] = None,
     n_jobs: int = 1,
@@ -8038,7 +8013,7 @@ def make_group_plots_meg_qc(
     calculation_dir = Path(source_megqc_root) / "calculation"
     if not calculation_dir.exists() and derivatives_base is not None:
         original_megqc_root = os.path.join(
-            dataset_path, "derivatives", "Meg_QC", *analysis_segments
+            dataset_path, "derivatives", "MEEGqc", *analysis_segments
         )
         original_calc_dir = Path(original_megqc_root) / "calculation"
         if original_calc_dir.exists():
@@ -8090,7 +8065,7 @@ def make_group_plots_meg_qc(
         )
         meg_report_dir = reports_dir / "meg"
         meg_report_dir.mkdir(parents=True, exist_ok=True)
-        meg_path = meg_report_dir / f"QA_group_report_{dataset_name}_meg.html"
+        meg_path = meg_report_dir / f"desc-datasetQaReport_meg.html"
         meg_path.write_text(meg_html, encoding="utf-8")
         print(f"___MEGqc___:   MEG report: {meg_path}")
 
@@ -8104,7 +8079,7 @@ def make_group_plots_meg_qc(
         )
         eeg_report_dir = reports_dir / "eeg"
         eeg_report_dir.mkdir(parents=True, exist_ok=True)
-        eeg_path = eeg_report_dir / f"QA_group_report_{dataset_name}_eeg.html"
+        eeg_path = eeg_report_dir / f"desc-datasetQaReport_eeg.html"
         eeg_path.write_text(eeg_html, encoding="utf-8")
         print(f"___MEGqc___:   EEG report: {eeg_path}")
 
@@ -8112,8 +8087,8 @@ def make_group_plots_meg_qc(
     meg_accs_check = {k: v for k, v in tab_accumulators.items()
                       if k in ("Combined (mag+grad)", "MAG", "GRAD")}
     if any(acc.run_count > 0 for acc in meg_accs_check.values()):
-        primary_path = reports_dir / "meg" / f"QA_group_report_{dataset_name}_meg.html"
+        primary_path = reports_dir / "meg" / f"desc-datasetQaReport_meg.html"
     else:
-        primary_path = reports_dir / "eeg" / f"QA_group_report_{dataset_name}_eeg.html"
+        primary_path = reports_dir / "eeg" / f"desc-datasetQaReport_eeg.html"
 
     return {"report": primary_path}

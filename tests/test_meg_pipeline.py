@@ -66,11 +66,11 @@ class TestMegPipeline(unittest.TestCase):
             n_jobs=1,
         )
 
-        derivatives_root = self.data_directory / "derivatives" / "Meg_QC"
+        derivatives_root = self.data_directory / "derivatives" / "MEEGqc"
         calculation_dir = derivatives_root / "calculation"
         self.assertTrue(
             calculation_dir.exists(),
-            "Calculation step should create derivatives/Meg_QC/calculation",
+            "Calculation step should create derivatives/MEEGqc/calculation",
         )
 
         make_plots_meg_qc(str(self.data_directory), n_jobs=1)

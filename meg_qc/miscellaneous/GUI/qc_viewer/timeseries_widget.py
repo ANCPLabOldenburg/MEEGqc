@@ -1976,7 +1976,7 @@ class TimeSeriesWidget(QWidget):
         if not found_dirs:
             QMessageBox.information(self, "Scan Result",
                                     f"No MEEGqc calculation directory found for '{sub_entity}'.\n\n"
-                                    "Make sure the derivatives are in a 'derivatives/Meg_QC/calculation/' "
+                                    "Make sure the derivatives are in a 'derivatives/MEEGqc/calculation/' "
                                     "directory structure.")
             return
 
@@ -2064,9 +2064,9 @@ class TimeSeriesWidget(QWidget):
         start_path = p.parent if p.suffix.lower() == ".ds" else p
         for parent in start_path.parents:
             for calc_root in [
-                parent / "derivatives" / "Meg_QC" / "calculation" / sub_entity,
-                parent / "derivatives" / "Meg_QC" / "calculation",
-                parent / "Meg_QC" / "calculation" / sub_entity,
+                parent / "derivatives" / "MEEGqc" / "calculation" / sub_entity,
+                parent / "derivatives" / "MEEGqc" / "calculation",
+                parent / "MEEGqc" / "calculation" / sub_entity,
                 parent / "calculation" / sub_entity,
             ]:
                 if calc_root.is_dir():
@@ -2081,7 +2081,7 @@ class TimeSeriesWidget(QWidget):
                                     found_dirs.append(str(mod_sub))
                     else:
                         found_dirs.append(str(calc_root))
-            profile_root = parent / "derivatives" / "Meg_QC" / "profiles"
+            profile_root = parent / "derivatives" / "MEEGqc" / "profiles"
             if profile_root.is_dir():
                 for profile_dir in profile_root.iterdir():
                     if profile_dir.is_dir():
@@ -2098,8 +2098,8 @@ class TimeSeriesWidget(QWidget):
             if not ext_p.is_dir():
                 continue
             for candidate in [
-                ext_p / "derivatives" / "Meg_QC" / "calculation" / sub_entity,
-                ext_p / "Meg_QC" / "calculation" / sub_entity,
+                ext_p / "derivatives" / "MEEGqc" / "calculation" / sub_entity,
+                ext_p / "MEEGqc" / "calculation" / sub_entity,
                 ext_p / "calculation" / sub_entity,
             ]:
                 if candidate.is_dir():
@@ -2109,8 +2109,8 @@ class TimeSeriesWidget(QWidget):
                     mod_candidate = candidate.parent / modality / sub_entity
                     if mod_candidate.is_dir():
                         found_dirs.append(str(mod_candidate))
-            for prof_root in [ext_p / "derivatives" / "Meg_QC" / "profiles",
-                              ext_p / "Meg_QC" / "profiles"]:
+            for prof_root in [ext_p / "derivatives" / "MEEGqc" / "profiles",
+                              ext_p / "MEEGqc" / "profiles"]:
                 if prof_root.is_dir():
                     for pd in prof_root.iterdir():
                         if pd.is_dir():

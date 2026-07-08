@@ -213,7 +213,7 @@ def list_analysis_profiles(
 ) -> List[str]:
     """List available MEGqc profile IDs for one dataset.
 
-    Profiles are discovered under ``derivatives/Meg_QC/profiles/<analysis_id>``.
+    Profiles are discovered under ``derivatives/MEEGqc/profiles/<analysis_id>``.
     Returned IDs are sorted by latest modification time first.
 
     When an external derivatives root is provided **both** the external output
@@ -228,14 +228,14 @@ def list_analysis_profiles(
     nothing and ``resolve_analysis_root`` raises ``FileNotFoundError``.
     """
     _, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
-    primary_profiles_root = os.path.join(derivatives_root, "Meg_QC", "profiles")
+    primary_profiles_root = os.path.join(derivatives_root, "MEEGqc", "profiles")
     candidates = _scan_profile_dir(primary_profiles_root)
 
     # Also search the original dataset when an external path is set and the two
     # locations differ (covers the case where calc ran without --derivatives_output).
     if external_derivatives_root is not None:
         original_profiles_root = os.path.join(
-            dataset_path, "derivatives", "Meg_QC", "profiles"
+            dataset_path, "derivatives", "MEEGqc", "profiles"
         )
         if os.path.abspath(original_profiles_root) != os.path.abspath(primary_profiles_root):
             original_candidates = _scan_profile_dir(original_profiles_root)
@@ -246,6 +246,38 @@ def list_analysis_profiles(
             candidates.sort(key=lambda item: item[1], reverse=True)
 
     return [name for name, _ in candidates]
+
+
+LEGACY_DERIVATIVES_HINT = (
+    "Incompatible derivatives detected. This MEEGqc version writes BIDS-compliant "
+    "derivative names under 'derivatives/MEEGqc' (the folder was previously named "
+    "'derivatives/Meg_QC', and some metric file names were not BIDS-valid). "
+    "Derivatives produced by an older MEEGqc version cannot be used to build "
+    "reports. Please re-run the CALCULATION module first to regenerate the "
+    "derivatives, then generate the reports."
+)
+
+
+def has_only_legacy_derivatives(
+    dataset_path: str,
+    external_derivatives_root: Optional[str] = None,
+) -> bool:
+    """Return True if old-style ('Meg_QC') derivatives exist but no new ('MEEGqc') ones.
+
+    Lets the CLI and GUI show a clear, actionable message when a user tries to
+    build reports from derivatives produced by a pre-BIDS-rename MEEGqc version.
+    """
+    try:
+        _output_root, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
+    except Exception:
+        return False
+    bases = [derivatives_root]
+    if dataset_path:
+        # Also the in-dataset derivatives tree (external/Scenario-C layouts).
+        bases.append(os.path.join(dataset_path, "derivatives"))
+    legacy = any(os.path.isdir(os.path.join(b, "Meg_QC")) for b in bases)
+    current = any(os.path.isdir(os.path.join(b, "MEEGqc")) for b in bases)
+    return legacy and not current
 
 
 def resolve_analysis_root(
@@ -272,7 +304,7 @@ def resolve_analysis_root(
         )
 
     output_root, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
-    legacy_root = os.path.join(derivatives_root, "Meg_QC")
+    legacy_root = os.path.join(derivatives_root, "MEEGqc")
     if mode == "legacy":
         if create_if_missing:
             os.makedirs(legacy_root, exist_ok=True)
@@ -381,10 +413,10 @@ def temporary_dataset_base(dataset, base_dir: str):
 def _ensure_derivative_dataset_description_filename(derivative) -> None:
     """Guarantee a writable dataset_description filename for ANCPBIDS writes.
 
-    Some datasets contain partially written legacy ``derivatives/Meg_QC`` trees.
+    Some datasets contain partially written legacy ``derivatives/MEEGqc`` trees.
     In that state ANCPBIDS can materialize ``derivative.dataset_description``
     with ``name=None``. During ``write_derivative`` this makes the writer target
-    the folder path (``.../derivatives/Meg_QC``) as if it were a file, which
+    the folder path (``.../derivatives/MEEGqc``) as if it were a file, which
     triggers ``No file writer registered``.
 
     We normalize this eagerly so repeated runs remain robust regardless of
@@ -1187,7 +1219,7 @@ def process_one_subject(
         Base directory used when persisting derivatives (parent of the
         derivatives folder), allowing redirection outside the BIDS dataset.
     analysis_segments : list of str, optional
-        Extra folder segments inserted between ``Meg_QC`` and ``calculation``.
+        Extra folder segments inserted between ``MEEGqc`` and ``calculation``.
         In legacy mode this is ``[]``; in profile mode this is
         ``["profiles", <analysis_id>]``.
     """
@@ -1195,14 +1227,14 @@ def process_one_subject(
     # We replicate everything that was inside the loop.
 
     # CREATE DERIVATIVE FOR THIS SUBJECT
-    derivative = dataset.create_derivative(name="Meg_QC")
+    derivative = dataset.create_derivative(name="MEEGqc")
     _ensure_derivative_dataset_description_filename(derivative)
     derivative.dataset_description.GeneratedBy.Name = "MEG QC Pipeline"
 
     print('___MEGqc___: ', 'Take SUB: ', sub)
 
     analysis_segments = analysis_segments or []
-    # Keep derivative naming stable (Meg_QC) and insert profile folder(s)
+    # Keep derivative naming stable (MEEGqc) and insert profile folder(s)
     # underneath it so existing desc/suffix parsing remains unchanged.
     root_folder = derivative
     for seg in analysis_segments:
@@ -1570,6 +1602,8 @@ def process_one_subject(
                 counter += 1
                 print('___MEGqc___: ', 'counter of subject_folder.create_artifact', counter)
 
+                # The metric name is already a BIDS-valid (alphanumeric) desc
+                # label by construction, so it is used directly as the file name.
                 meg_artifact.add_entity('desc', deriv.name)  # file name
                 meg_artifact.suffix = _bids_suffix
                 meg_artifact.extension = '.html'
@@ -1872,9 +1906,9 @@ def make_derivative_meg_qc(
     Parameters
     ----------
     analysis_mode
-        ``legacy`` writes to ``derivatives/Meg_QC``.
+        ``legacy`` writes to ``derivatives/MEEGqc``.
         ``new``/``reuse``/``latest`` write under
-        ``derivatives/Meg_QC/profiles/<analysis_id>``.
+        ``derivatives/MEEGqc/profiles/<analysis_id>``.
     analysis_id
         Profile identifier used with ``new`` or ``reuse``.
     existing_config_policy
@@ -2002,7 +2036,7 @@ def make_derivative_meg_qc(
                 if files is not None:
                     all_subs_raw_files.extend(files)
 
-            derivative = dataset.create_derivative(name="Meg_QC")
+            derivative = dataset.create_derivative(name="MEEGqc")
             _ensure_derivative_dataset_description_filename(derivative)
             derivative.dataset_description.GeneratedBy.Name = "MEG QC Pipeline"
             root_folder = derivative

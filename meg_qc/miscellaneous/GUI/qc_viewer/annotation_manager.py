@@ -553,19 +553,21 @@ class AnnotationManager:
                     setattr(self.annotations, rate_attr, float(rate_vals.iloc[0]))
 
     def _load_epoch_matrices(self):
+        # desc labels match the BIDS-valid names written by STD_meg_qc.py, e.g.
+        # NoisyEpochsOnSTDBaseMag / FlatEpochsOnPtPBaseGrad.
         mappings = [
-            ("Noisy_epochs_on_std_base_mag", self.annotations.noisy_epochs_std, "noisy_std", "mag"),
-            ("Noisy_epochs_on_std_base_grad", self.annotations.noisy_epochs_std, "noisy_std", "grad"),
-            ("Noisy_epochs_on_std_base_eeg", self.annotations.noisy_epochs_std, "noisy_std", "eeg"),
-            ("Flat_epochs_on_std_base_mag", self.annotations.flat_epochs_std, "flat_std", "mag"),
-            ("Flat_epochs_on_std_base_grad", self.annotations.flat_epochs_std, "flat_std", "grad"),
-            ("Flat_epochs_on_std_base_eeg", self.annotations.flat_epochs_std, "flat_std", "eeg"),
-            ("Noisy_epochs_on_ptp_base_mag", self.annotations.noisy_epochs_ptp, "noisy_ptp", "mag"),
-            ("Noisy_epochs_on_ptp_base_grad", self.annotations.noisy_epochs_ptp, "noisy_ptp", "grad"),
-            ("Noisy_epochs_on_ptp_base_eeg", self.annotations.noisy_epochs_ptp, "noisy_ptp", "eeg"),
-            ("Flat_epochs_on_ptp_base_mag", self.annotations.flat_epochs_ptp, "flat_ptp", "mag"),
-            ("Flat_epochs_on_ptp_base_grad", self.annotations.flat_epochs_ptp, "flat_ptp", "grad"),
-            ("Flat_epochs_on_ptp_base_eeg", self.annotations.flat_epochs_ptp, "flat_ptp", "eeg"),
+            ("NoisyEpochsOnSTDBaseMag", self.annotations.noisy_epochs_std, "noisy_std", "mag"),
+            ("NoisyEpochsOnSTDBaseGrad", self.annotations.noisy_epochs_std, "noisy_std", "grad"),
+            ("NoisyEpochsOnSTDBaseEeg", self.annotations.noisy_epochs_std, "noisy_std", "eeg"),
+            ("FlatEpochsOnSTDBaseMag", self.annotations.flat_epochs_std, "flat_std", "mag"),
+            ("FlatEpochsOnSTDBaseGrad", self.annotations.flat_epochs_std, "flat_std", "grad"),
+            ("FlatEpochsOnSTDBaseEeg", self.annotations.flat_epochs_std, "flat_std", "eeg"),
+            ("NoisyEpochsOnPtPBaseMag", self.annotations.noisy_epochs_ptp, "noisy_ptp", "mag"),
+            ("NoisyEpochsOnPtPBaseGrad", self.annotations.noisy_epochs_ptp, "noisy_ptp", "grad"),
+            ("NoisyEpochsOnPtPBaseEeg", self.annotations.noisy_epochs_ptp, "noisy_ptp", "eeg"),
+            ("FlatEpochsOnPtPBaseMag", self.annotations.flat_epochs_ptp, "flat_ptp", "mag"),
+            ("FlatEpochsOnPtPBaseGrad", self.annotations.flat_epochs_ptp, "flat_ptp", "grad"),
+            ("FlatEpochsOnPtPBaseEeg", self.annotations.flat_epochs_ptp, "flat_ptp", "eeg"),
         ]
         for desc, store, metric, ch_type in mappings:
             p = self._fpath(desc)

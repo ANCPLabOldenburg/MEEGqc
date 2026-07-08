@@ -246,8 +246,9 @@ from PyQt6.QtCore import (
     QSettings,
     QTimer,
     QStandardPaths,
+    QUrl,
 )
-from PyQt6.QtGui import QPixmap, QIcon, QPalette, QColor
+from PyQt6.QtGui import QPixmap, QIcon, QPalette, QColor, QDesktopServices
 
 # Core MEG QC pipeline functions
 from meg_qc.test import (
@@ -2193,8 +2194,14 @@ class MainWindow(QMainWindow):
         self.btn_check_updates.clicked.connect(
             lambda: check_for_updates_interactive(self, self.btn_check_updates)
         )
+        self.btn_version_notes = QPushButton("Version notes")
+        self.btn_version_notes.setToolTip(
+            "Open the online version notes (what changed in each release)."
+        )
+        self.btn_version_notes.clicked.connect(self._open_version_notes)
         bottom_lay.addWidget(self.lbl_version)
         bottom_lay.addWidget(self.btn_check_updates)
+        bottom_lay.addWidget(self.btn_version_notes)
         bottom_lay.addStretch(1)
         self.btn_qc_viewer = QPushButton("QC Viewer")
         self.btn_qc_viewer.setToolTip("Open the integrated QC data & report viewer.")
@@ -3031,6 +3038,23 @@ class MainWindow(QMainWindow):
     # ──────────────────────────────── #
     # QC Viewer launcher               #
     # ──────────────────────────────── #
+    # URL of the online release / version notes page.
+    VERSION_NOTES_URL = (
+        "https://ancplaboldenburg.github.io/megqc_documentation/updates.html"
+    )
+
+    def _open_version_notes(self):
+        """Open the online version notes page in the default web browser."""
+        try:
+            QDesktopServices.openUrl(QUrl(self.VERSION_NOTES_URL))
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Version notes",
+                f"Could not open the version notes page:\n{e}\n\n"
+                f"You can visit it directly at:\n{self.VERSION_NOTES_URL}",
+            )
+
     def _open_qc_viewer(self):
         """Open the integrated QC Viewer window."""
         try:

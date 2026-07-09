@@ -15,6 +15,7 @@
   <a href="https://pypi.org/project/meg-qc/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/meg-qc.svg"></a>
   <a href="https://github.com/ANCPLabOldenburg/MEEGqc/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <a href="https://ancplaboldenburg.github.io/megqc_documentation/"><img alt="Documentation" src="https://img.shields.io/badge/docs-online-2da3e8.svg"></a>
+  <a href="https://github.com/karellopez/MEEGqc/actions/workflows/tests.yml"><img alt="tests" src="https://github.com/karellopez/MEEGqc/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
 ---

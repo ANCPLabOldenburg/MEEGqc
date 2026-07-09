@@ -5,9 +5,13 @@ name: tests
 # fixture bundle (a GitHub Release asset). See tests/README.md.
 
 on:
-  push:
-  pull_request:
+  # Manual only: this suite does NOT run automatically, to conserve GitHub
+  # Actions minutes. Trigger it on demand from the Actions tab ("Run workflow")
+  # or with:  gh workflow run tests.yml
+  # To re-enable automatic runs, uncomment push / pull_request below.
   workflow_dispatch:
+  # push:
+  # pull_request:
 
 concurrency:
   group: tests-${{ github.ref }}

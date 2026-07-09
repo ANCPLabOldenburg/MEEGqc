@@ -27,7 +27,7 @@ Or drive pytest yourself:
 
 ```bash
 # GUI + get-config only (no data):
-QT_QPA_PLATFORM=offscreen pytest tests/gui tests/test_cli_get_config.py
+QT_QPA_PLATFORM=offscreen pytest tests/gui tests/test_get_config.py
 
 # everything, against an unpacked bundle:
 export MEEGQC_TEST_DATA=/path/to/meegqc_test_data

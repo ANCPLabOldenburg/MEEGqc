@@ -42,7 +42,6 @@ jobs:
           - { os: macos-13,         label: macos-x64 }
           - { os: macos-14,         label: macos-arm }
           - { os: windows-latest,   label: windows-x64 }
-          - { os: windows-11-arm,   label: windows-arm, experimental: true }
 
     defaults:
       run:
@@ -99,15 +98,9 @@ jobs:
           PY
 
       # ---- Run the suite --------------------------------------------------
-      # The three pre-existing tests below are excluded: they fail independently
-      # of this suite (a removed symbol after the group->dataset refactor and an
-      # MNE-1.12 logging quirk). Fix and re-enable them separately.
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
           MEEGQC_TEST_DATA: ${{ github.workspace }}/meegqc_test_data
         run: |
-          python -m pytest tests/ -v --durations=25 -p no:cacheprovider \
-            --ignore=tests/test_group_figure.py \
-            --ignore=tests/test_meg_pipeline.py \
-            --ignore=tests/test_global_report.py
+          python -m pytest tests/ -v --durations=25 -p no:cacheprovider

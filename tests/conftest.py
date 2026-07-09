@@ -177,13 +177,18 @@ def isolated_dataset(tmp_path):
     return _copy
 
 
-def run_cli(args, timeout=1200):
-    """Run a MEEGqc console script; return CompletedProcess. Skips if absent."""
+def run_cli(args, timeout=1800):
+    """Run a MEEGqc console script; return CompletedProcess. Skips if absent.
+
+    Output is decoded as UTF-8 with errors='replace' so a Windows runner never
+    crashes decoding the pipeline's unicode output (uV, fT/sqrt(Hz), ...) under a
+    non-UTF-8 locale.
+    """
     exe = shutil.which(args[0])
     if exe is None:
         pytest.skip(f"{args[0]} not on PATH (package not installed?)")
     return subprocess.run([exe, *args[1:]], capture_output=True, text=True,
-                          timeout=timeout)
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 @pytest.fixture

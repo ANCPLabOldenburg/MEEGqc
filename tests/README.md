@@ -13,24 +13,26 @@ Three tiers of tests:
 
 ## Running locally
 
+Easiest: the runner downloads the fixture bundle for you and keeps all output
+under `tests/_local/` (git-ignored):
+
 ```bash
 pip install -e .
 pip install pytest
-
-# unit + GUI only (no data):
-QT_QPA_PLATFORM=offscreen pytest tests/gui tests/test_cli_get_config.py
-
-# everything, against a fixture bundle:
-export MEEGQC_TEST_DATA=/path/to/meegqc_test_data
-QT_QPA_PLATFORM=offscreen pytest tests/ \
-  --ignore=tests/test_group_figure.py \
-  --ignore=tests/test_meg_pipeline.py \
-  --ignore=tests/test_global_report.py
+python tests/run_local.py                 # whole suite
+python tests/run_local.py tests/gui -v    # any args forwarded to pytest
 ```
 
-(The three ignored files are pre-existing failures unrelated to this suite: a
-symbol removed in the `group -> dataset` refactor and an MNE-1.12 logging quirk.
-Fix and re-enable them separately.)
+Or drive pytest yourself:
+
+```bash
+# GUI + get-config only (no data):
+QT_QPA_PLATFORM=offscreen pytest tests/gui tests/test_cli_get_config.py
+
+# everything, against an unpacked bundle:
+export MEEGQC_TEST_DATA=/path/to/meegqc_test_data
+QT_QPA_PLATFORM=offscreen pytest tests/
+```
 
 ## The real-data fixture bundle
 
@@ -62,35 +64,23 @@ samples and the `.res4` header is patched), so it stays native CTF. A
 `MANIFEST.json` records every recording (dataset, subject, format, channels,
 sampling rate) and drives the parametrized tests.
 
-### Hosting the bundle
-
-CI downloads the tarball from a single URL: `FIXTURES_URL` in the workflow (best
-set as a repo variable under Settings -> Secrets and variables -> Actions ->
-Variables, so it is not hard-coded). Any public direct-download URL works.
+### Uploading the bundle to a GitHub Release
 
 ```bash
 tar -czf meegqc_test_data.tar.gz -C /tmp meegqc_test_data
-```
 
-Option A - **GitHub Release asset** (fork is fine; it does not touch the ANCP repo):
-
-```bash
+# create (or reuse) the release and attach the asset (public repo -> CI can
+# curl it without auth):
 gh release create test-data-v1 meegqc_test_data.tar.gz \
   --repo <owner>/MEEGqc --title "Test data v1" \
   --notes "10 s cropped MEG/EEG fixtures for CI"
+# or, to add to an existing release:
+gh release upload test-data-v1 meegqc_test_data.tar.gz --repo <owner>/MEEGqc
 ```
-URL: `https://github.com/<owner>/MEEGqc/releases/download/test-data-v1/meegqc_test_data.tar.gz`
 
-Option B - **University cloud (Nextcloud, e.g. cloud.uol.de)**: upload the
-tarball, create a **public share link**, and append `/download`:
-`https://cloud.uol.de/s/<share-token>/download`. Use a share **without a
-password** so CI can fetch it unauthenticated (or, if it must be private, put
-the whole URL in a GitHub Actions **secret** and reference it from the
-workflow). Confirm it downloads with `curl -fsSL -o t.tar.gz "<url>"` locally.
-
-Whichever you pick, set `FIXTURES_URL` to that URL. When you replace the data,
-re-upload and **bump `FIXTURES_VERSION`** in the workflow so the cache key
-changes and runners fetch the new bundle.
+CI pulls it from `https://github.com/<repo>/releases/download/<FIXTURES_TAG>/meegqc_test_data.tar.gz`.
+To publish a new bundle, bump `FIXTURES_TAG` in the workflow and upload under
+the new tag (the old cache key stops matching, so runners fetch the new one).
 
 ## What is covered
 

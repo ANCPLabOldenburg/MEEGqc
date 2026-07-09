@@ -40,13 +40,6 @@ OUTPUT = LOCAL / "output"
 DEFAULT_URL = "https://cloud.uol.de/s/5JnCs6FxSnejjD6/download"
 URL = os.environ.get("MEEGQC_FIXTURES_URL", DEFAULT_URL)
 
-# The 3 pre-existing broken tests (unrelated to this suite) are excluded by default.
-IGNORE = [
-    "--ignore=tests/test_group_figure.py",
-    "--ignore=tests/test_meg_pipeline.py",
-    "--ignore=tests/test_global_report.py",
-]
-
 
 def _download(url: str, dest: Path) -> None:
     """Download a URL to *dest*. Prefer curl (uses system certs, avoids the
@@ -90,7 +83,7 @@ def main() -> int:
     # ensure the console scripts (run-meegqc, run-meegqc-plotting, ...) resolve
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
 
-    args = sys.argv[1:] or ["tests/", *IGNORE]
+    args = sys.argv[1:] or ["tests/"]
     cmd = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
            f"--basetemp={OUTPUT}", *args]
     print(f"python  : {sys.version.split()[0]}")

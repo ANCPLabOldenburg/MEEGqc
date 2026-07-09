@@ -30,18 +30,23 @@ def test_qc_dataset_report(one_meg, isolated_dataset, full_config, cli):
     assert list((root / "reports").glob("*/*datasetQcReport*.html")), "no dataset QC report"
 
 
-def test_gqi_tables_and_regeneration(one_meg, isolated_dataset, full_config, cli):
+def test_gqi_table_has_expected_columns_and_regenerates(one_meg, isolated_dataset, full_config, cli):
+    import csv
     ds = isolated_dataset(one_meg[1])
     root = _calc(cli, ds, full_config)
     # calc already writes a GQI attempt table with a BIDS-valid name
     gqi = list(root.glob("summary_reports/**/desc-GlobalQualityIndexAttempt*_*.tsv"))
     assert gqi, "no GQI attempt table after calculation"
-    # regenerate GQI independently
+    with open(gqi[0], encoding="utf-8") as f:
+        header = next(csv.reader(f, delimiter="\t"))
+    assert "task" in header, f"GQI table missing 'task' column: {header}"
+    assert any("GQI" in h for h in header), f"GQI table missing a GQI score column: {header}"
+    # regenerate GQI independently (a second attempt)
     r = cli(["globalqualityindex", "--inputdata", str(ds)])
     assert r.returncode == 0, r.stdout[-3000:]
 
 
-def test_eeg_reports(one_eeg, isolated_dataset, full_config, cli):
+def test_eeg_subject_qa_report(one_eeg, isolated_dataset, full_config, cli):
     ds = isolated_dataset(one_eeg[1])
     root = _calc(cli, ds, full_config)
     r = cli(["run-meegqc-plotting", "--inputdata", str(ds), "--qa-subject"])

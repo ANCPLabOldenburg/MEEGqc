@@ -150,6 +150,15 @@ def one_eeg():
 
 
 @pytest.fixture(scope="session")
+def two_subject_dataset():
+    """First dataset with >= 2 subjects, so n_jobs=2 parallelizes across them."""
+    for name, path in ALL_DATASETS:
+        if len(list(path.glob("sub-*"))) >= 2:
+            return (name, path)
+    pytest.skip("no dataset with >= 2 subjects in bundle")
+
+
+@pytest.fixture(scope="session")
 def two_datasets():
     if len(ALL_DATASETS) < 2:
         pytest.skip("need >= 2 datasets in bundle")

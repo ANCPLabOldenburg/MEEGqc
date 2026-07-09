@@ -1872,11 +1872,18 @@ class MainWindow(QMainWindow):
         profile_lay = QGridLayout(profile_box)
 
         self.cmb_analysis_mode = QComboBox()
-        self.cmb_analysis_mode.addItems(["legacy", "new", "reuse", "latest"])
-        self.cmb_analysis_mode.setCurrentText("new")
+        # Human-readable label shown to the user, canonical value (currentData)
+        # passed to the engine. Top-level choice is non-profile vs a profile run.
+        self.cmb_analysis_mode.addItem("Non-profile (single run)", "non-profile")
+        self.cmb_analysis_mode.addItem("New profile", "new-profile")
+        self.cmb_analysis_mode.addItem("Reuse profile", "reuse-profile")
+        self.cmb_analysis_mode.addItem("Latest profile", "latest-profile")
+        self.cmb_analysis_mode.setCurrentIndex(self.cmb_analysis_mode.findData("new-profile"))
+        # Grey out the profile-only controls when non-profile is selected.
+        self.cmb_analysis_mode.currentIndexChanged.connect(self._update_profile_controls_enabled)
 
         self.edit_analysis_id = QLineEdit()
-        self.edit_analysis_id.setPlaceholderText("Optional profile ID (required for mode=reuse)")
+        self.edit_analysis_id.setPlaceholderText("Optional profile ID (required for Reuse profile)")
         self.btn_load_profiles = QPushButton("Load profiles...")
         self.btn_load_profiles.clicked.connect(self._load_available_profiles)
         self.btn_refresh_profiles = QPushButton("Refresh profiles")
@@ -1902,6 +1909,7 @@ class MainWindow(QMainWindow):
         profile_lay.addWidget(self.cmb_processed_sub_policy, 1, 3)
         profile_lay.setColumnStretch(3, 1)
         inputs_layout.addWidget(profile_box)
+        self._update_profile_controls_enabled()
 
         dataset_btn_row = QWidget()
         dataset_btn_lay = QHBoxLayout(dataset_btn_row)
@@ -2481,20 +2489,33 @@ class MainWindow(QMainWindow):
         self._refresh_dataset_settings_button_state()
 
     def _collect_analysis_profile_settings(self) -> Tuple[str, Optional[str], str, str]:
-        mode = self.cmb_analysis_mode.currentText().strip().lower()
+        # currentData() is the canonical mode value (non-profile / new-profile / ...).
+        mode = self.cmb_analysis_mode.currentData() or "non-profile"
         analysis_id = self.edit_analysis_id.text().strip() or None
         cfg_policy = self.cmb_existing_cfg_policy.currentText().strip().lower()
         sub_policy = self.cmb_processed_sub_policy.currentText().strip().lower()
         return mode, analysis_id, cfg_policy, sub_policy
+
+    def _set_analysis_mode(self, canonical: str) -> None:
+        """Select the analysis-mode combo entry by its canonical value."""
+        idx = self.cmb_analysis_mode.findData(canonical)
+        if idx >= 0:
+            self.cmb_analysis_mode.setCurrentIndex(idx)
+
+    def _update_profile_controls_enabled(self, *args) -> None:
+        """Grey out the profile-only controls when non-profile mode is selected."""
+        is_profile = (self.cmb_analysis_mode.currentData() or "non-profile") != "non-profile"
+        for w in (self.edit_analysis_id, self.btn_load_profiles, self.btn_refresh_profiles):
+            w.setEnabled(is_profile)
 
     @staticmethod
     def _generate_shared_analysis_id() -> str:
         return f"analysis_{time.strftime('%Y%m%d_%H%M%S')}"
 
     def _validate_analysis_selection(self, mode, analysis_id, cfg_policy=None, sub_policy=None) -> bool:
-        if mode == "reuse" and not analysis_id:
+        if mode == "reuse-profile" and not analysis_id:
             QMessageBox.warning(self, "Analysis profile",
-                "analysis_mode='reuse' requires a profile ID.\nSet a profile ID or use 'Load profiles...'.")
+                "analysis_mode='reuse-profile' requires a profile ID.\nSet a profile ID or use 'Load profiles...'.")
             return False
         return True
 
@@ -2525,7 +2546,7 @@ class MainWindow(QMainWindow):
         self._log(f"Profile scan completed ({summary}); common={len(common)}.")
         if len(datasets) > 1 and not common:
             QMessageBox.information(self, "Profiles",
-                "No common profile ID across all selected datasets.\nUse legacy mode or create/reuse a shared analysis_id.")
+                "No common profile ID across all selected datasets.\nUse non-profile mode or create/reuse a shared analysis_id.")
 
     def _load_available_profiles(self):
         datasets = self._collect_dataset_paths()
@@ -2546,23 +2567,23 @@ class MainWindow(QMainWindow):
         picked, ok = QInputDialog.getItem(self, "Select profile", label, options, 0, False)
         if ok and picked:
             self.edit_analysis_id.setText(str(picked))
-            self.cmb_analysis_mode.setCurrentText("reuse")
+            self._set_analysis_mode("reuse-profile")
             self._log(f"Selected profile: {picked}")
 
     def _validate_multi_dataset_profile_compatibility(self, mode, analysis_id, *, qa_multi_dataset, qc_multi_dataset, require_existing_profiles=True) -> bool:
         if not (qa_multi_dataset or qc_multi_dataset):
             return True
-        if mode == "legacy":
+        if mode == "non-profile":
             return True
-        if mode not in {"reuse", "new"}:
+        if mode not in {"reuse-profile", "new-profile"}:
             QMessageBox.warning(self, "Profile compatibility",
-                "Multisample plotting requires a shared profile strategy.\nUse mode='reuse'/'new' or legacy mode.")
+                "Multisample plotting requires a shared profile strategy.\nUse a Reuse/New profile, or non-profile mode.")
             return False
         if not analysis_id:
             QMessageBox.warning(self, "Profile compatibility",
-                "Multisample plotting requires a profile ID for mode='reuse'/'new'.")
+                "Multisample plotting requires a profile ID for a Reuse/New profile.")
             return False
-        if mode == "new" and not require_existing_profiles:
+        if mode == "new-profile" and not require_existing_profiles:
             return True
         profile_map, _common = self._discover_profiles_for_datasets()
         missing = [Path(ds).name for ds, vals in profile_map.items() if analysis_id not in set(vals)]
@@ -2765,7 +2786,7 @@ class MainWindow(QMainWindow):
         def on_started():
             self._start_task_timer("calc")
             cfg_note = f"global={self.global_config_path or 'default'}"
-            self._log(f"Calculation started for {len(dataset_paths)} dataset(s) ({cfg_note}, analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"Calculation started for {len(dataset_paths)} dataset(s) ({cfg_note}, analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("calc")
@@ -2836,7 +2857,7 @@ class MainWindow(QMainWindow):
         analysis_mode, analysis_id, _cfg_policy, _sub_policy = self._collect_analysis_profile_settings()
         if not self._validate_analysis_selection(analysis_mode, analysis_id, cfg_policy=_cfg_policy, sub_policy=_sub_policy):
             return
-        if analysis_mode == "new" and not analysis_id:
+        if analysis_mode == "new-profile" and not analysis_id:
             QMessageBox.warning(self, "Plotting", "Mode 'new' requires a profile ID for plotting.\nUse mode 'reuse' with a profile ID, or 'latest'/'legacy'.")
             return
         if not self._validate_multi_dataset_profile_compatibility(analysis_mode, analysis_id, qa_multi_dataset=qa_multi_dataset, qc_multi_dataset=qc_multi_dataset):
@@ -2861,7 +2882,7 @@ class MainWindow(QMainWindow):
 
         def on_started():
             self._start_task_timer("plot")
-            self._log(f"Plotting started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"Plotting started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("plot")
@@ -2909,7 +2930,7 @@ class MainWindow(QMainWindow):
         analysis_mode, analysis_id, _cfg_policy, _sub_policy = self._collect_analysis_profile_settings()
         if not self._validate_analysis_selection(analysis_mode, analysis_id, cfg_policy=_cfg_policy, sub_policy=_sub_policy):
             return
-        if analysis_mode == "new" and not analysis_id:
+        if analysis_mode == "new-profile" and not analysis_id:
             QMessageBox.warning(self, "GQI", "Mode 'new' requires a profile ID for GQI recomputation.\nUse mode 'reuse' with a profile ID, or 'latest'/'legacy'.")
             return
         args = (
@@ -2921,7 +2942,7 @@ class MainWindow(QMainWindow):
 
         def on_started():
             self._start_task_timer("gqi")
-            self._log(f"GQI started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"GQI started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("gqi")
@@ -2979,7 +3000,7 @@ class MainWindow(QMainWindow):
         qc_dataset = self.chk_qc_dataset.isChecked()
         qc_multi_dataset = self.chk_qc_multi_dataset.isChecked()
         multi_dataset_requested = qa_multi_dataset or qc_multi_dataset
-        if analysis_mode == "new" and multi_dataset_requested and len(dataset_paths) > 1 and not analysis_id:
+        if analysis_mode == "new-profile" and multi_dataset_requested and len(dataset_paths) > 1 and not analysis_id:
             analysis_id = self._generate_shared_analysis_id()
             self.edit_analysis_id.setText(analysis_id)
             self._log(f"Run ALL assigned shared analysis_id for multi-dataset queue: {analysis_id}")
@@ -2999,7 +3020,7 @@ class MainWindow(QMainWindow):
 
         def on_started():
             self._start_task_timer("all")
-            self._log(f"Run ALL started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"Run ALL started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("all")

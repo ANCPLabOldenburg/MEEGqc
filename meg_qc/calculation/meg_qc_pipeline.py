@@ -125,7 +125,35 @@ from contextlib import contextmanager
 from meg_qc.calculation.metrics.summary_report_GQI import generate_gqi_summary
 
 
-_ANALYSIS_MODES = {"legacy", "new", "reuse", "latest"}
+# Canonical analysis-mode names. The top-level choice is "non-profile" (write
+# straight to derivatives/MEEGqc, no versioning) vs a "profile" run (versioned
+# under derivatives/MEEGqc/profiles/<id>) with one of three profile actions.
+_ANALYSIS_MODES = {"non-profile", "new-profile", "reuse-profile", "latest-profile"}
+
+# Accepted spellings mapped to the canonical names above. The previous names
+# (legacy/new/reuse/latest) are kept as aliases so existing scripts, saved
+# profiles and CLI calls keep working unchanged.
+_ANALYSIS_MODE_ALIASES = {
+    "legacy": "non-profile", "non-profile": "non-profile",
+    "non_profile": "non-profile", "nonprofile": "non-profile",
+    "new": "new-profile", "new-profile": "new-profile", "new_profile": "new-profile",
+    "reuse": "reuse-profile", "reuse-profile": "reuse-profile",
+    "reuse_profile": "reuse-profile", "existing": "reuse-profile",
+    "latest": "latest-profile", "latest-profile": "latest-profile",
+    "latest_profile": "latest-profile",
+}
+
+
+def normalize_analysis_mode(mode: Optional[str]) -> str:
+    """Map any accepted analysis-mode spelling to its canonical name.
+
+    Canonical: non-profile / new-profile / reuse-profile / latest-profile.
+    The old legacy/new/reuse/latest names are accepted as aliases.
+    """
+    m = str(mode or "non-profile").strip().lower()
+    return _ANALYSIS_MODE_ALIASES.get(m, m)
+
+
 # Prompt-based policies were removed to guarantee non-blocking execution in
 # CLI batch runs and GUI worker subprocesses.
 _CONFIG_POLICIES = {"provided", "latest_saved", "fail"}
@@ -283,7 +311,7 @@ def has_only_legacy_derivatives(
 def resolve_analysis_root(
     dataset_path: str,
     external_derivatives_root: Optional[str] = None,
-    analysis_mode: str = "legacy",
+    analysis_mode: str = "non-profile",
     analysis_id: Optional[str] = None,
     create_if_missing: bool = False,
 ) -> Tuple[str, str, str, Optional[str], List[str]]:
@@ -293,46 +321,47 @@ def resolve_analysis_root(
     -------
     tuple
         ``(output_root, derivatives_root, megqc_root, resolved_analysis_id, analysis_segments)``
-        where ``analysis_segments`` is ``[]`` in legacy mode and
+        where ``analysis_segments`` is ``[]`` in non-profile mode and
         ``["profiles", resolved_analysis_id]`` otherwise.
     """
-    mode = str(analysis_mode or "legacy").strip().lower()
+    mode = normalize_analysis_mode(analysis_mode)
     if mode not in _ANALYSIS_MODES:
         raise ValueError(
             f"Invalid analysis_mode '{analysis_mode}'. Supported modes: "
-            f"{', '.join(sorted(_ANALYSIS_MODES))}."
+            f"{', '.join(sorted(_ANALYSIS_MODES))} "
+            "(legacy/new/reuse/latest still accepted as aliases)."
         )
 
     output_root, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
-    legacy_root = os.path.join(derivatives_root, "MEEGqc")
-    if mode == "legacy":
+    non_profile_root = os.path.join(derivatives_root, "MEEGqc")
+    if mode == "non-profile":
         if create_if_missing:
-            os.makedirs(legacy_root, exist_ok=True)
-        return output_root, derivatives_root, legacy_root, None, []
+            os.makedirs(non_profile_root, exist_ok=True)
+        return output_root, derivatives_root, non_profile_root, None, []
 
-    profiles_root = os.path.join(legacy_root, "profiles")
+    profiles_root = os.path.join(non_profile_root, "profiles")
     if create_if_missing:
         os.makedirs(profiles_root, exist_ok=True)
 
     resolved_id = analysis_id.strip() if isinstance(analysis_id, str) and analysis_id.strip() else None
     available = list_analysis_profiles(dataset_path, external_derivatives_root)
 
-    if mode == "new":
+    if mode == "new-profile":
         resolved_id = resolved_id or _timestamp_analysis_id()
-    elif mode == "reuse":
+    elif mode == "reuse-profile":
         if not resolved_id:
-            raise ValueError("analysis_mode='reuse' requires analysis_id.")
+            raise ValueError("analysis_mode='reuse-profile' requires analysis_id.")
         if resolved_id not in available and not create_if_missing:
             raise FileNotFoundError(
                 f"Profile '{resolved_id}' not found under {profiles_root}."
             )
-    elif mode == "latest":
+    elif mode == "latest-profile":
         if available:
             resolved_id = available[0]
         else:
             raise FileNotFoundError(
                 f"No analysis profiles found under {profiles_root}. "
-                "Use analysis_mode='new' to create one, or analysis_mode='legacy'."
+                "Use analysis_mode='new-profile' to create one, or 'non-profile'."
             )
 
     profile_root = os.path.join(profiles_root, str(resolved_id))
@@ -789,21 +818,29 @@ def ask_user_rerun_subs(reuse_config_file_path: str, sub_list: List[str]):
     )
 
 
-def _subjects_overlap_from_config(config_file_path: Optional[str], requested_subs: List[str]) -> List[str]:
-    """Return requested subjects that were already processed for one config snapshot."""
-    if not config_file_path:
-        return []
-    prev_files, _ = get_list_of_raws_for_config(config_file_path)
-    if not prev_files:
-        return []
-    parsed = []
-    for name in prev_files:
-        try:
-            parsed.append(str(name).split('sub-')[1].split('_')[0])
-        except Exception:
+def _already_processed_subjects(megqc_root: str) -> set:
+    """Subject labels that already have calculation outputs in this approach root.
+
+    Detected directly from the filesystem (``calculation/<modality>/sub-<label>/``)
+    so it is robust to config-snapshot naming and works identically in legacy and
+    profile modes. A subject counts as processed when its folder holds at least one
+    derivative file. This is what ``processed_subjects_policy`` checks against; the
+    previous approach compared against the user-provided config file, which has no
+    companion record of processed subjects, so ``skip`` never actually skipped.
+    """
+    done = set()
+    calc_root = os.path.join(megqc_root, "calculation")
+    if not os.path.isdir(calc_root):
+        return done
+    for modality in os.listdir(calc_root):
+        mod_dir = os.path.join(calc_root, modality)
+        if not os.path.isdir(mod_dir):
             continue
-    done_subs = set(parsed)
-    return [sub for sub in requested_subs if sub in done_subs]
+        for entry in os.listdir(mod_dir):
+            sub_dir = os.path.join(mod_dir, entry)
+            if entry.startswith("sub-") and os.path.isdir(sub_dir) and os.listdir(sub_dir):
+                done.add(entry.split("sub-")[1].split("_")[0])
+    return done
 
 
 def _apply_processed_subjects_policy(
@@ -1631,8 +1668,11 @@ def process_one_subject(
 
                 elif deriv.content_type == 'info':
                     meg_artifact.extension = '.fif'
+                    # overwrite=True so an intentional recompute (processed_subjects_policy
+                    # ='rerun') overwrites the previous RawInfo sidecar instead of crashing
+                    # with FileExistsError. The TSV/JSON writers already overwrite in place.
                     meg_artifact.content = lambda file_path, cont=deriv.content: mne.io.write_info(
-                        file_path, cont
+                        file_path, cont, overwrite=True
                     )
                 else:
                     print('___MEGqc___: ', meg_artifact.name)
@@ -1894,7 +1934,7 @@ def make_derivative_meg_qc(
         sub_list: Union[List[str], str] = 'all',
         n_jobs: int = 5,  # Number of parallel jobs
         derivatives_base: Optional[str] = None,
-        analysis_mode: str = "legacy",
+        analysis_mode: str = "non-profile",
         analysis_id: Optional[str] = None,
         existing_config_policy: str = "provided",
         processed_subjects_policy: str = "skip",
@@ -1968,13 +2008,22 @@ def make_derivative_meg_qc(
             if dataset_sub_list is None:
                 print('___MEGqc___: ', 'No valid subjects to process for this dataset.')
                 continue
-            overlap = _subjects_overlap_from_config(config_file_path, dataset_sub_list)
+            overlap = [
+                s for s in dataset_sub_list
+                if s in _already_processed_subjects(megqc_root)
+            ]
             dataset_sub_list = _apply_processed_subjects_policy(
                 requested_subs=dataset_sub_list,
                 overlap_subs=overlap,
                 processed_subjects_policy=processed_subjects_policy,
                 interactive_prompts=interactive_prompts,
             )
+            if not dataset_sub_list:
+                print('___MEGqc___: ',
+                      'All requested subjects are already processed for this approach; '
+                      'nothing to do. Use processed_subjects_policy="rerun" to recompute '
+                      'them, or analysis_mode="new-profile" for a fresh profile.')
+                continue
 
             # Parallel execution over subjects
             # Each subject is processed by process_one_subject_safe() in parallel

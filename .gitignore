@@ -29,3 +29,6 @@ __pycache__/
 *.nbc
 *.nbi
 .pytest_cache/
+
+# local test runner output (tests/run_local.py)
+tests/_local/

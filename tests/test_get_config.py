@@ -19,4 +19,5 @@ def test_get_config_writes_valid_ini(tmp_path):
     cp.read(ini)
     assert "GENERAL" in cp
     assert "GlobalQualityIndex" in cp
-    assert cp.has_option("Epoching", "use_fixed_length_epochs")
+    assert cp.has_option("Epoching", "epoching_strategy")
+    assert cp.get("Epoching", "epoching_strategy") in ("auto", "events", "fixed")

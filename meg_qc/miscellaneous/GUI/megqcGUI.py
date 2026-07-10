@@ -623,6 +623,7 @@ class SettingsEditorDialog(QDialog):
 
     _ENUM_OPTIONS: Dict[Tuple[str, str], List[str]] = {
         ("Filtering", "method"): ["iir", "fir"],
+        ("Epoching", "epoching_strategy"): ["auto", "events", "fixed"],
         ("Epoching", "event_repeated"): ["merge", "drop", "error"],
         ("EEG", "reference_method"): ["average", "REST", "none"],
         ("EEG", "montage"): [
@@ -687,6 +688,12 @@ class SettingsEditorDialog(QDialog):
 
         self.comment_map = self._build_comment_map(self.defaults_path)
         self.widgets: Dict[Tuple[str, str], Tuple[QWidget, str]] = {}
+        # Track each row's label and each section's group box so the grey-out
+        # system can dim the whole row (label + field) and whole sections, and
+        # so disabled widgets visibly change colour (a plain setEnabled(False)
+        # under the app QSS was not obviously greying them).
+        self.labels: Dict[Tuple[str, str], QLabel] = {}
+        self.section_boxes: Dict[str, QGroupBox] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -703,6 +710,7 @@ class SettingsEditorDialog(QDialog):
             box = QGroupBox(section)
             box.setMinimumWidth(260)
             box.setMaximumWidth(360)
+            self.section_boxes[section] = box
             form = QFormLayout(box)
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
             for key, val in self._section_items(section):
@@ -713,14 +721,17 @@ class SettingsEditorDialog(QDialog):
                 if tip:
                     label.setToolTip(tip)
                     widget.setToolTip(tip)
+                self.labels[(section, key)] = label
                 form.addRow(label, widget)
             grid.addWidget(box, idx // 3, idx % 3)
 
         scroll.setWidget(container)
         root.addWidget(scroll)
 
-        # Wire apply_filtering toggle AFTER all widgets are built
+        # Wire the grey-out system AFTER all widgets are built.
         self._wire_apply_filtering_toggle()
+        self._wire_epoching_strategy_toggle()
+        self._wire_metric_section_toggles()
 
         btn_row = QHBoxLayout()
         self.btn_reset = QPushButton("Reset to defaults")
@@ -737,6 +748,20 @@ class SettingsEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def _set_row_enabled(self, section, key, enabled):
+        """Enable/disable one settings row: the field widget AND its label, so
+        the whole row dims (the label carries the parameter name)."""
+        if (section, key) in self.widgets:
+            self.widgets[(section, key)][0].setEnabled(enabled)
+        if (section, key) in self.labels:
+            self.labels[(section, key)].setEnabled(enabled)
+
+    def _set_rows_enabled(self, section, enabled, exclude_key=None):
+        """Enable/disable every row in a section except an optional controller."""
+        for (sec, key) in list(self.widgets.keys()):
+            if sec == section and key != exclude_key:
+                self._set_row_enabled(sec, key, enabled)
+
     def _wire_apply_filtering_toggle(self):
         """
         When 'apply_filtering' is unchecked, gray-out the filter frequency and
@@ -752,13 +777,82 @@ class SettingsEditorDialog(QDialog):
         def _set_enabled(state):
             enabled = bool(state)
             for k in filter_dependent_keys:
-                if ("Filtering", k) in self.widgets:
-                    w, _ = self.widgets[("Filtering", k)]
-                    w.setEnabled(enabled)
+                self._set_row_enabled("Filtering", k, enabled)
 
         chk_widget.stateChanged.connect(_set_enabled)
         # Apply initial state on dialog open
         _set_enabled(chk_widget.isChecked())
+
+    def _wire_epoching_strategy_toggle(self):
+        """
+        Grey-out the Epoching settings that have no effect under the chosen
+        epoching_strategy:
+          - 'fixed'  : the event-based fields are irrelevant (segmentation ignores events).
+          - 'events' : the fixed-length fields are irrelevant (no fixed fallback).
+          - 'auto'   : everything applies.
+        """
+        if ("Epoching", "epoching_strategy") not in self.widgets:
+            return
+        cmb_widget, _ = self.widgets[("Epoching", "epoching_strategy")]
+        event_keys = ["event_dur", "epoch_tmin", "epoch_tmax", "stim_channel",
+                      "preferred_stim_channels", "noisy_stim_channels", "event_repeated"]
+        fixed_keys = ["fixed_epoch_duration", "fixed_epoch_overlap"]
+
+        def _apply(keys, enabled):
+            for k in keys:
+                self._set_row_enabled("Epoching", k, enabled)
+
+        def _set_enabled(_text=None):
+            strategy = str(cmb_widget.currentText()).strip().lower()
+            _apply(event_keys, strategy != "fixed")
+            _apply(fixed_keys, strategy != "events")
+
+        cmb_widget.currentTextChanged.connect(_set_enabled)
+        _set_enabled()
+
+    # A metric's on/off switch (in [GENERAL], or compute_gqi in its own section)
+    # gates the parameters that only matter when that metric runs. Mapping:
+    # (controller section, controller key) -> config section whose fields it gates.
+    _METRIC_SECTION_GATES = {
+        ("GENERAL", "STD"): "STD",
+        ("GENERAL", "PSD"): "PSD",
+        ("GENERAL", "PTP_manual"): "PTP_manual",
+        ("GENERAL", "ECG"): "ECG",
+        ("GENERAL", "EOG"): "EOG",
+        ("GENERAL", "Head"): "Head_movement",
+        ("GENERAL", "Muscle"): "Muscle",
+        ("GlobalQualityIndex", "compute_gqi"): "GlobalQualityIndex",
+    }
+
+    def _wire_metric_section_toggles(self):
+        """
+        Grey-out a whole metric section when its on/off switch is unchecked.
+        The [GENERAL] STD/PSD/PTP_manual/ECG/EOG/Head/Muscle booleans gate their
+        matching [<metric>] section; compute_gqi gates the rest of its own
+        [GlobalQualityIndex] section (its own checkbox stays live so it can be
+        turned back on).
+        """
+        for (ctrl_section, ctrl_key), gated in self._METRIC_SECTION_GATES.items():
+            if (ctrl_section, ctrl_key) not in self.widgets:
+                continue
+            chk_widget, _ = self.widgets[(ctrl_section, ctrl_key)]
+            controls_own_section = (ctrl_section == gated)
+
+            def _make_setter(gated=gated, ctrl_key=ctrl_key, own=controls_own_section):
+                def _set_enabled(state):
+                    enabled = bool(state)
+                    if own:
+                        # Keep the switch itself live; dim the other rows.
+                        self._set_rows_enabled(gated, enabled, exclude_key=ctrl_key)
+                    elif gated in self.section_boxes:
+                        # Controller lives elsewhere: dim the whole section box
+                        # (title + every field) in one call.
+                        self.section_boxes[gated].setEnabled(enabled)
+                return _set_enabled
+
+            setter = _make_setter()
+            chk_widget.stateChanged.connect(setter)
+            setter(chk_widget.isChecked())
 
     def _ordered_sections(self) -> List[str]:
         sections = list(self.config.sections())
@@ -1575,6 +1669,26 @@ class MainWindow(QMainWindow):
         pale.setColor(QPalette.ColorRole.PlaceholderText, QColor("#585c79"))
         themes["Palenight"] = pale
 
+        # Give every theme an explicit Disabled colour group. None of the
+        # palettes above define one, so Fusion derived disabled text from the
+        # (explicit white/black) enabled colour, which barely differed - greyed
+        # controls did not visibly change colour. Blend each text role 45%
+        # toward the window background so a disabled label / field / combo /
+        # checkbox renders in a clearly muted, theme-appropriate grey. Fusion
+        # applies the Disabled group uniformly, so every widget type dims the
+        # same amount (no per-widget QSS needed).
+        for pal in themes.values():
+            win = pal.color(QPalette.ColorRole.Window)
+            for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
+                         QPalette.ColorRole.ButtonText):
+                base = pal.color(role)
+                muted = QColor(
+                    round(base.red() * 0.45 + win.red() * 0.55),
+                    round(base.green() * 0.45 + win.green() * 0.55),
+                    round(base.blue() * 0.45 + win.blue() * 0.55),
+                )
+                pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
+
         return themes
 
     # ──────────────────────────────── #
@@ -1890,11 +2004,11 @@ class MainWindow(QMainWindow):
         self.btn_refresh_profiles.clicked.connect(self._refresh_profiles_cache)
 
         self.cmb_existing_cfg_policy = QComboBox()
-        self.cmb_existing_cfg_policy.addItems(["provided", "latest_saved", "fail"])
+        self.cmb_existing_cfg_policy.addItems(["provided", "latest_saved", "stop"])
         self.cmb_existing_cfg_policy.setCurrentText("provided")
 
         self.cmb_processed_sub_policy = QComboBox()
-        self.cmb_processed_sub_policy.addItems(["skip", "rerun", "fail"])
+        self.cmb_processed_sub_policy.addItems(["skip", "rerun", "stop"])
         self.cmb_processed_sub_policy.setCurrentText("skip")
 
         profile_lay.addWidget(QLabel("Mode:"), 0, 0)

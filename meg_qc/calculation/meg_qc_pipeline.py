@@ -125,39 +125,33 @@ from contextlib import contextmanager
 from meg_qc.calculation.metrics.summary_report_GQI import generate_gqi_summary
 
 
-# Canonical analysis-mode names. The top-level choice is "non-profile" (write
-# straight to derivatives/MEEGqc, no versioning) vs a "profile" run (versioned
-# under derivatives/MEEGqc/profiles/<id>) with one of three profile actions.
+# Analysis-mode names. The top-level choice is "non-profile" (write straight to
+# derivatives/MEEGqc, no versioning) vs a "profile" run (versioned under
+# derivatives/MEEGqc/profiles/<id>) with one of three profile actions.
 _ANALYSIS_MODES = {"non-profile", "new-profile", "reuse-profile", "latest-profile"}
-
-# Accepted spellings mapped to the canonical names above. The previous names
-# (legacy/new/reuse/latest) are kept as aliases so existing scripts, saved
-# profiles and CLI calls keep working unchanged.
-_ANALYSIS_MODE_ALIASES = {
-    "legacy": "non-profile", "non-profile": "non-profile",
-    "non_profile": "non-profile", "nonprofile": "non-profile",
-    "new": "new-profile", "new-profile": "new-profile", "new_profile": "new-profile",
-    "reuse": "reuse-profile", "reuse-profile": "reuse-profile",
-    "reuse_profile": "reuse-profile", "existing": "reuse-profile",
-    "latest": "latest-profile", "latest-profile": "latest-profile",
-    "latest_profile": "latest-profile",
-}
-
-
-def normalize_analysis_mode(mode: Optional[str]) -> str:
-    """Map any accepted analysis-mode spelling to its canonical name.
-
-    Canonical: non-profile / new-profile / reuse-profile / latest-profile.
-    The old legacy/new/reuse/latest names are accepted as aliases.
-    """
-    m = str(mode or "non-profile").strip().lower()
-    return _ANALYSIS_MODE_ALIASES.get(m, m)
 
 
 # Prompt-based policies were removed to guarantee non-blocking execution in
-# CLI batch runs and GUI worker subprocesses.
-_CONFIG_POLICIES = {"provided", "latest_saved", "fail"}
-_PROCESSED_SUBJECT_POLICIES = {"skip", "rerun", "fail"}
+# CLI batch runs and GUI worker subprocesses. "stop" raises an error.
+_CONFIG_POLICIES = {"provided", "latest_saved", "stop"}
+_PROCESSED_SUBJECT_POLICIES = {"skip", "rerun", "stop"}
+
+
+_BIDS_ENTITY_RE = re.compile(r"([a-zA-Z]+)-([a-zA-Z0-9]+)")
+
+
+def _raw_entities(raw_name) -> dict:
+    """BIDS key -> label pairs parsed from a raw filename, e.g.
+    ``sub-01_ses-02_run-01_meg.fif`` -> ``{'sub': '01', 'ses': '02', 'run': '01'}``.
+
+    Used for two things in the calculation output: picking the ``ses`` label to
+    nest derivatives under sub-XXX/ses-YYY (issue #132), and re-applying every
+    label verbatim onto the derivative artifact so ancpbids' integer typing of
+    index entities does not turn a raw ``run-01`` into ``run-1``.
+    """
+    if not raw_name:
+        return {}
+    return dict(_BIDS_ENTITY_RE.findall(str(raw_name).split(".")[0]))
 
 
 def _timestamp_analysis_id() -> str:
@@ -324,12 +318,11 @@ def resolve_analysis_root(
         where ``analysis_segments`` is ``[]`` in non-profile mode and
         ``["profiles", resolved_analysis_id]`` otherwise.
     """
-    mode = normalize_analysis_mode(analysis_mode)
+    mode = str(analysis_mode or "non-profile").strip().lower()
     if mode not in _ANALYSIS_MODES:
         raise ValueError(
             f"Invalid analysis_mode '{analysis_mode}'. Supported modes: "
-            f"{', '.join(sorted(_ANALYSIS_MODES))} "
-            "(legacy/new/reuse/latest still accepted as aliases)."
+            f"{', '.join(sorted(_ANALYSIS_MODES))}."
         )
 
     output_root, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
@@ -409,18 +402,13 @@ def _resolve_config_by_policy(
         return default_config_file_path
     if policy == "latest_saved":
         return existing[0] if existing else default_config_file_path
-    if policy == "fail":
-        if existing:
-            raise RuntimeError(
-                "Existing config snapshots were found for this dataset/profile. "
-                "Choose existing_config_policy='provided' or 'latest_saved'."
-            )
-        return default_config_file_path
-
-    raise RuntimeError(
-        "Prompt-based config policy is no longer supported. "
-        "Use existing_config_policy='provided', 'latest_saved', or 'fail'."
-    )
+    # policy == "stop"
+    if existing:
+        raise RuntimeError(
+            "Existing config snapshots were found for this dataset/profile. "
+            "Choose existing_config_policy='provided' or 'latest_saved'."
+        )
+    return default_config_file_path
 
 
 @contextmanager
@@ -793,31 +781,6 @@ def create_config_artifact(root_folder, config_file_path: str, f_name_to_save: s
     return
 
 
-def ask_user_rerun_subs(reuse_config_file_path: str, sub_list: List[str]):
-    """
-    Ask the user if he wants to rerun the same subjects again or skip them.
-
-    Parameters
-    ----------
-    reuse_config_file_path : str
-        Path to the config file used for this ds conversion before.
-    sub_list : list
-        List of subjects to run the QC on.
-
-    Returns
-    -------
-    sub_list : list
-        Updated list of subjects to run the QC on.
-
-    """
-
-    # Deprecated helper kept only for API compatibility.
-    raise RuntimeError(
-        "ask_user_rerun_subs() is deprecated. "
-        "Use processed_subjects_policy ('skip'|'rerun'|'fail')."
-    )
-
-
 def _already_processed_subjects(megqc_root: str) -> set:
     """Subject labels that already have calculation outputs in this approach root.
 
@@ -858,7 +821,7 @@ def _apply_processed_subjects_policy(
     overlap_subs
         Subjects already represented in the selected config snapshot.
     processed_subjects_policy
-        One of: ``skip``, ``rerun``, ``fail``.
+        One of: ``skip``, ``rerun``, ``stop``.
     interactive_prompts
         Deprecated (kept for API compatibility). Prompt policies were removed.
     """
@@ -880,15 +843,10 @@ def _apply_processed_subjects_policy(
     if policy == "rerun":
         print('___MEGqc___: ', 'Rerun policy selected; all requested subjects will be processed.')
         return requested_subs
-    if policy == "fail":
-        raise RuntimeError(
-            "Already-processed subjects detected and processed_subjects_policy='fail'. "
-            "Use 'skip' or 'rerun' to continue."
-        )
-
+    # policy == "stop"
     raise RuntimeError(
-        "Prompt-based processed-subject policy is no longer supported. "
-        "Use processed_subjects_policy='skip', 'rerun', or 'fail'."
+        "Already-processed subjects detected and processed_subjects_policy='stop'. "
+        "Use 'skip' or 'rerun' to continue."
     )
 
 
@@ -1280,7 +1238,12 @@ def process_one_subject(
     calculation_folder = root_folder.create_folder(name='calculation')
     # subject_folder is created per-file inside the loop, under a modality
     # subfolder (meg/ or eeg/) to avoid filename collisions between modalities.
-    _modality_subject_folders = {}  # cache: modality -> subject_folder
+    _modality_subject_folders = {}  # cache: modality -> subject_folder (sub-XXX)
+    # cache: (modality, ses_label) -> leaf folder where the derivatives land.
+    # When a recording carries a BIDS session entity a ses-<label> level is
+    # inserted (calculation/<mod>/sub-XXX/ses-YYY) so the derivative tree
+    # mirrors the raw BIDS hierarchy (issue #132).
+    _session_target_folders = {}
 
     # GET FILE LIST FOR THIS SUBJECT
     list_of_files, entities_per_file = get_files_list(
@@ -1630,12 +1593,32 @@ def process_one_subject(
             )
         subject_folder = _modality_subject_folders[_bids_suffix]
 
+        # Nest under a ses-<label> level when the recording carries a BIDS
+        # session entity, so the derivative tree mirrors sub-XXX/ses-YYY/
+        # (issue #132). Non-session recordings keep the flat sub-XXX layout.
+        _raw_entity = entities_per_file[file_ind]
+        _raw_ents = _raw_entities(_raw_entity.get('name') if hasattr(_raw_entity, 'get') else None)
+        ses_label = _raw_ents.get('ses')
+        _target_key = (_bids_suffix, ses_label)
+        if _target_key not in _session_target_folders:
+            if ses_label:
+                _session_target_folders[_target_key] = subject_folder.create_folder(
+                    name='ses-' + ses_label,
+                )
+            else:
+                _session_target_folders[_target_key] = subject_folder
+        target_folder = _session_target_folders[_target_key]
+
         for section in (sec for sec in QC_derivs.values() if sec):
             for deriv in (
                     d for d in section
                     if d.content_type not in ['matplotlib', 'plotly', 'report']
             ):
-                meg_artifact = subject_folder.create_artifact(raw=entities_per_file[file_ind])
+                meg_artifact = target_folder.create_artifact(raw=entities_per_file[file_ind])
+                # Re-apply the raw filename labels so ancpbids keeps run-01 as
+                # run-01 (it types index entities as int, collapsing to run-1).
+                for _k, _v in _raw_ents.items():
+                    meg_artifact.add_entity(_k, _v)
                 counter += 1
                 print('___MEGqc___: ', 'counter of subject_folder.create_artifact', counter)
 

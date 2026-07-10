@@ -59,8 +59,7 @@ PROFILE_MODE_HELP = (
     "       For plotting/GQI, 'new-profile' is read-only only when --analysis_id is\n"
     "       provided (internally mapped to reuse-profile).\n"
     "  reuse-profile: use one explicit existing profile (--analysis_id required).\n"
-    "  latest-profile: resolve the most recently modified profile automatically.\n"
-    "  (The old names legacy/new/reuse/latest are still accepted as aliases.)"
+    "  latest-profile: resolve the most recently modified profile automatically."
 )
 
 PROFILE_ID_HELP = (
@@ -212,14 +211,12 @@ def run_calculation_dispatch(
     Runs one or multiple datasets sequentially. Subject-level parallelism remains
     controlled by ``n_jobs`` (or ``dataset_njobs`` overrides when provided).
     """
-    from meg_qc.calculation.meg_qc_pipeline import (
-        make_derivative_meg_qc, normalize_analysis_mode,
-    )
+    from meg_qc.calculation.meg_qc_pipeline import make_derivative_meg_qc
 
     ds_list = _normalize_dataset_paths(dataset_paths)
     if not ds_list:
         raise ValueError("No dataset paths provided for calculation.")
-    analysis_mode = normalize_analysis_mode(analysis_mode)
+    analysis_mode = str(analysis_mode or "non-profile").strip().lower()
     if analysis_mode == "non-profile":
         logger(
             "[Calculation] analysis_mode='non-profile' writes into derivatives/MEEGqc. "
@@ -388,7 +385,6 @@ def run_plotting_dispatch(
         resolve_analysis_root,
         has_only_legacy_derivatives,
         LEGACY_DERIVATIVES_HINT,
-        normalize_analysis_mode,
     )
 
     ds_list = _normalize_dataset_paths(dataset_paths)
@@ -402,7 +398,7 @@ def run_plotting_dispatch(
             logger(f"___MEGqc___:   legacy 'Meg_QC' derivatives found, re-run calculation for: {d}")
         return {}
 
-    effective_mode = normalize_analysis_mode(analysis_mode)
+    effective_mode = str(analysis_mode or "non-profile").strip().lower()
     effective_id = analysis_id
     if effective_mode == "non-profile":
         logger(
@@ -656,8 +652,7 @@ def run_megqc():
     dataset_path_parser.add_argument(
         "--analysis_mode",
         type=str,
-        choices=["non-profile", "new-profile", "reuse-profile", "latest-profile",
-                 "legacy", "new", "reuse", "latest"],
+        choices=["non-profile", "new-profile", "reuse-profile", "latest-profile"],
         metavar="MODE",
         default="non-profile",
         help=PROFILE_MODE_HELP,
@@ -671,21 +666,21 @@ def run_megqc():
     dataset_path_parser.add_argument(
         "--existing_config_policy",
         type=str,
-        choices=["provided", "latest_saved", "fail"],
+        choices=["provided", "latest_saved", "stop"],
         default="provided",
         help=(
             "Policy when settings snapshots already exist in selected profile: "
-            "provided (default), latest_saved, fail."
+            "provided (default), latest_saved, stop."
         ),
     )
     dataset_path_parser.add_argument(
         "--processed_subjects_policy",
         type=str,
-        choices=["skip", "rerun", "fail"],
+        choices=["skip", "rerun", "stop"],
         default="skip",
         help=(
             "Policy for subjects already processed in selected profile/config: "
-            "skip (default), rerun, fail."
+            "skip (default), rerun, stop."
         ),
     )
     dataset_path_parser.add_argument(
@@ -912,8 +907,7 @@ def get_plots():
     dataset_path_parser.add_argument(
         "--analysis_mode",
         type=str,
-        choices=["non-profile", "new-profile", "reuse-profile", "latest-profile",
-                 "legacy", "new", "reuse", "latest"],
+        choices=["non-profile", "new-profile", "reuse-profile", "latest-profile"],
         metavar="MODE",
         default="non-profile",
         help=PROFILE_MODE_HELP,
@@ -1045,7 +1039,6 @@ def run_gqi_dispatch(
         resolve_analysis_root,
         has_only_legacy_derivatives,
         LEGACY_DERIVATIVES_HINT,
-        normalize_analysis_mode,
     )
 
     ds_list = _normalize_dataset_paths(dataset_paths)
@@ -1059,7 +1052,7 @@ def run_gqi_dispatch(
             logger(f"___MEGqc___:   legacy 'Meg_QC' derivatives found, re-run calculation for: {d}")
         return
 
-    effective_mode = normalize_analysis_mode(analysis_mode)
+    effective_mode = str(analysis_mode or "non-profile").strip().lower()
     effective_id = analysis_id
     if effective_mode == "new-profile":
         if effective_id:
@@ -1134,8 +1127,7 @@ def run_all_dispatch(
     This helper is shared by CLI and GUI so that "run all" behavior is
     consistent and auditable from one entry point.
     """
-    from meg_qc.calculation.meg_qc_pipeline import normalize_analysis_mode
-    analysis_mode = normalize_analysis_mode(analysis_mode)
+    analysis_mode = str(analysis_mode or "non-profile").strip().lower()
     effective_analysis_id = analysis_id
     if analysis_mode == "new-profile" and not effective_analysis_id:
         # Run-all needs one shared profile ID for both calculation and plotting.
@@ -1217,8 +1209,7 @@ def run_gqi():
     parser.add_argument(
         "--analysis_mode",
         type=str,
-        choices=["non-profile", "new-profile", "reuse-profile", "latest-profile",
-                 "legacy", "new", "reuse", "latest"],
+        choices=["non-profile", "new-profile", "reuse-profile", "latest-profile"],
         metavar="MODE",
         default="non-profile",
         help=PROFILE_MODE_HELP,

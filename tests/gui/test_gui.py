@@ -1,4 +1,5 @@
-"""Headless GUI tests (offscreen). Cover construction + the profile-mode controls."""
+"""Headless GUI tests (offscreen). Cover construction, the profile-mode controls,
+and the settings-dialog grey-out system."""
 import os
 
 import pytest
@@ -49,5 +50,53 @@ def test_collect_returns_canonical_mode(main_window):
     main_window._set_analysis_mode("new-profile")
     mode, analysis_id, cfg_policy, sub_policy = main_window._collect_analysis_profile_settings()
     assert mode == "new-profile"
-    assert cfg_policy in ("provided", "latest_saved", "fail")
-    assert sub_policy in ("skip", "rerun", "fail")
+    assert cfg_policy in ("provided", "latest_saved", "stop")
+    assert sub_policy in ("skip", "rerun", "stop")
+
+
+@pytest.fixture
+def settings_dialog(qapp):
+    import os.path as p
+    import meg_qc
+    from meg_qc.miscellaneous.GUI.megqcGUI import SettingsEditorDialog
+    ini = p.join(p.dirname(meg_qc.__file__), "settings", "settings.ini")
+    dlg = SettingsEditorDialog(ini, ini, "test")
+    yield dlg
+    dlg.close()
+
+
+def test_metric_switch_greys_whole_section(settings_dialog, qapp):
+    """Turning a [GENERAL] metric off greys that metric's whole section box."""
+    dlg = settings_dialog
+    std = dlg.widgets[("GENERAL", "STD")][0]
+    std.setChecked(False); qapp.processEvents()
+    assert not dlg.section_boxes["STD"].isEnabled()
+    std.setChecked(True); qapp.processEvents()
+    assert dlg.section_boxes["STD"].isEnabled()
+    # Head defaults to False -> its section is greyed on open.
+    assert not dlg.section_boxes["Head_movement"].isEnabled()
+
+
+def test_compute_gqi_greys_rows_but_keeps_switch(settings_dialog, qapp):
+    """compute_gqi=off greys the other GQI rows (widget + label) but the switch stays live."""
+    dlg = settings_dialog
+    gqi = dlg.widgets[("GlobalQualityIndex", "compute_gqi")][0]
+    others = [k for (s, k) in dlg.widgets if s == "GlobalQualityIndex" and k != "compute_gqi"]
+    gqi.setChecked(False); qapp.processEvents()
+    assert gqi.isEnabled()
+    for k in others:
+        assert not dlg.widgets[("GlobalQualityIndex", k)][0].isEnabled()
+        assert not dlg.labels[("GlobalQualityIndex", k)].isEnabled()
+
+
+def test_greyout_dims_label_not_just_field(settings_dialog, qapp):
+    """The label dims alongside the field (the colour fix)."""
+    dlg = settings_dialog
+    cmb = dlg.widgets[("Epoching", "epoching_strategy")][0]
+    cmb.setCurrentText("fixed"); qapp.processEvents()
+    assert not dlg.widgets[("Epoching", "event_dur")][0].isEnabled()
+    assert not dlg.labels[("Epoching", "event_dur")].isEnabled()
+    assert dlg.widgets[("Epoching", "fixed_epoch_duration")][0].isEnabled()
+    cmb.setCurrentText("events"); qapp.processEvents()
+    assert dlg.widgets[("Epoching", "event_dur")][0].isEnabled()
+    assert not dlg.widgets[("Epoching", "fixed_epoch_duration")][0].isEnabled()

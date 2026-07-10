@@ -85,11 +85,10 @@ the new tag (the old cache key stops matching, so runners fetch the new one).
 ## What is covered
 
 CLI: `get-meegqc-config`; `run-meegqc` on **every** dataset/format (BIDS-valid
-derivative names asserted); the four analysis modes + legacy aliases; the
-`skip` / `rerun` semantics; `run-meegqc-plotting` (subject / dataset QA + QC,
-multi-dataset QA + QC); `globalqualityindex`. Python API: the `run_*_dispatch`
-functions and `normalize_analysis_mode`. GUI: construction and the
-profile / non-profile control blocking.
+derivative names asserted); the four analysis modes; the `skip` / `rerun`
+semantics; `run-meegqc-plotting` (subject / dataset QA + QC, multi-dataset QA +
+QC); `globalqualityindex`. Python API: the `run_*_dispatch` functions. GUI:
+construction and the profile / non-profile control blocking.
 
 ## CI matrix
 

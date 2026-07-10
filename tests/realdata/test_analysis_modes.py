@@ -1,4 +1,4 @@
-"""Analysis modes (non-profile / profile + legacy aliases) and skip/rerun semantics."""
+"""Analysis modes (non-profile / profile) and skip/rerun semantics."""
 import pytest
 
 pytestmark = pytest.mark.realdata
@@ -42,16 +42,6 @@ def test_latest_profile_resolves_newest_profile(one_meg, isolated_dataset, fast_
     assert r2.returncode == 0, r2.stdout[-3000:]
     assert list((_profiles(ds) / "p1" / "reports").glob("*/sub-*/*subjectQaReport*.html")), \
         "latest-profile did not render into the newest profile 'p1'"
-
-
-def test_legacy_alias_maps_to_non_profile(one_meg, isolated_dataset, fast_config, cli):
-    """The old 'legacy' name still works and behaves like 'non-profile'."""
-    ds = isolated_dataset(one_meg[1])
-    r = cli([*BASE, "--inputdata", str(ds), "--config", str(fast_config),
-             "--analysis_mode", "legacy"])
-    assert r.returncode == 0, r.stdout[-3000:]
-    assert _calc(ds).is_dir()
-    assert not _profiles(ds).exists()
 
 
 def test_unknown_analysis_mode_is_rejected(one_meg, isolated_dataset, fast_config, cli):

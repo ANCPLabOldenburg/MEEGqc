@@ -137,6 +137,12 @@ def get_all_config_params(config_file_path: str):
         noisy_raw = epoching_section.get('noisy_stim_channels', '')
         noisy_stim_channels = [c.strip() for c in noisy_raw.split(',') if c.strip()]
 
+        # epoching_strategy: 'auto' (events, with a fixed-length fallback when too
+        # few events are found), 'events' (events only, no fallback), or 'fixed'
+        # (force fixed-length segmentation regardless of any events).
+        strategy_raw = epoching_section.get('epoching_strategy', 'auto').strip().lower()
+        epoching_strategy = strategy_raw if strategy_raw in ('auto', 'events', 'fixed') else 'auto'
+
         epoching_params = dict({
             'event_dur': epoching_section.getfloat('event_dur'),
             'epoch_tmin': epoching_section.getfloat('epoch_tmin'),
@@ -145,7 +151,7 @@ def get_all_config_params(config_file_path: str):
             'preferred_stim_channels': preferred_stim_channels,
             'noisy_stim_channels': noisy_stim_channels,
             'event_repeated': epoching_section['event_repeated'],
-            'use_fixed_length_epochs': epoching_section.getboolean('use_fixed_length_epochs'),
+            'epoching_strategy': epoching_strategy,
             'fixed_epoch_duration': epoching_section.getfloat('fixed_epoch_duration'),
             'fixed_epoch_overlap': epoching_section.getfloat('fixed_epoch_overlap')})
         all_qc_params['Epoching'] = epoching_params
@@ -573,11 +579,13 @@ def Epoch_meg(epoching_params, data: mne.io.Raw, file_path: str = None):
     """
     Epoch MEG data based on the parameters provided in the config file.
 
-    Event detection priority:
+    Segmentation is driven by epoching_strategy ('auto' | 'events' | 'fixed').
+    In 'auto' and 'events' the event-detection priority is:
     1. BIDS *_events.tsv alongside the MEG file (most reliable).
     2. mne.find_events on the best available stim channel
        (prefers combined channels like STI101; excludes known-noisy channels).
-    3. Fixed-length epochs (fallback when use_fixed_length_epochs=True).
+    3. Fixed-length epochs (fallback in 'auto' when too few events; forced in
+       'fixed'; never used in 'events').
 
     Parameters
     ----------
@@ -599,10 +607,13 @@ def Epoch_meg(epoching_params, data: mne.io.Raw, file_path: str = None):
     epoch_tmin = epoching_params['epoch_tmin']
     epoch_tmax = epoching_params['epoch_tmax']
     stim_channel = epoching_params['stim_channel']
-    use_fixed_length_epochs = epoching_params['use_fixed_length_epochs']
+    # epoching_strategy: 'auto' (events + fixed-length fallback), 'events' (events
+    # only, no fallback), 'fixed' (force fixed-length regardless of events).
+    epoching_strategy = epoching_params.get('epoching_strategy', 'auto')
     fixed_epoch_duration = epoching_params['fixed_epoch_duration']
     fixed_epoch_overlap = epoching_params['fixed_epoch_overlap']
-    min_event_count = 2 if use_fixed_length_epochs else 1
+    # In 'auto' at least 2 events are needed before falling back; otherwise 1.
+    min_event_count = 2 if epoching_strategy == 'auto' else 1
 
     # Build case-insensitive sets from config lists (fall back to empty sets if keys are absent)
     _preferred = {ch.upper() for ch in epoching_params.get('preferred_stim_channels', [])}
@@ -644,8 +655,9 @@ def Epoch_meg(epoching_params, data: mne.io.Raw, file_path: str = None):
         return epochs
 
     def _apply_fixed_length_fallback(reason):
-        if not use_fixed_length_epochs:
-            print('___MEGqc___: ', reason)
+        if epoching_strategy == 'events':
+            print('___MEGqc___: ', reason,
+                  '(epoching_strategy="events": no fixed-length fallback; epoched metrics skipped)')
             return
         print(f'___MEGqc___: {reason} Falling back to fixed-length epoching.')
         nonlocal epoching_mode, epochs_mag, epochs_grad, epochs_eeg
@@ -682,7 +694,10 @@ def Epoch_meg(epoching_params, data: mne.io.Raw, file_path: str = None):
     if file_path is not None and not user_specified_stim:
         bids_events, bids_tsv, _id_to_trial_type = _read_bids_events_tsv(file_path, data)
 
-    if bids_events is not None and len(bids_events) >= min_event_count:
+    if epoching_strategy == 'fixed':
+        # Force fixed-length segmentation regardless of any events in the data.
+        _apply_fixed_length_fallback('epoching_strategy="fixed": forcing fixed-length epochs.')
+    elif bids_events is not None and len(bids_events) >= min_event_count:
         print(f'___MEGqc___: Using BIDS events TSV ({len(bids_events)} events).')
         _raw_events = bids_events
         _make_stim_epochs(bids_events)

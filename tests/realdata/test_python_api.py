@@ -25,18 +25,9 @@ def test_run_calculation_and_plotting_dispatch(one_meg, isolated_dataset, fast_c
     )
     calc = ds / "derivatives" / "MEEGqc" / "calculation"
     assert calc.is_dir()
-    assert list(calc.glob("*/sub-*/*_desc-STDs_*.tsv"))
+    # rglob: derivatives may be nested under a ses-<label> level (issue #132).
+    assert list(calc.rglob("*_desc-STDs_*.tsv"))
 
     run_plotting_dispatch(dataset_paths=[str(ds)], qa_subject=True,
                           analysis_mode="non-profile")
     assert list((ds / "derivatives" / "MEEGqc" / "reports").glob("*/sub-*/*subjectQaReport*.html"))
-
-
-def test_normalize_analysis_mode_aliases():
-    from meg_qc.calculation.meg_qc_pipeline import normalize_analysis_mode as n
-    assert n("legacy") == "non-profile"
-    assert n("new") == "new-profile"
-    assert n("reuse") == "reuse-profile"
-    assert n("latest") == "latest-profile"
-    assert n(None) == "non-profile"
-    assert n("NEW-PROFILE") == "new-profile"

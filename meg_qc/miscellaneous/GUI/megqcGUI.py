@@ -1425,6 +1425,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.statusBar().setVisible(False)
 
+        # Restore saved parallel (n_jobs / All cores) settings + wire persistence.
+        self._restore_parallel_options()
+
         saved_theme = str(self.settings_store.value("ui/theme", "Ocean"))
         if saved_theme not in self.themes:
             saved_theme = "Ocean"
@@ -2068,8 +2071,11 @@ class MainWindow(QMainWindow):
 
         self.jobs = QSpinBox()
         self.jobs.setRange(-1, os.cpu_count() or 1)
-        self.jobs.setValue(-1)
+        # Safe default: 1 job. Using all cores (-1) is opt-in via the "All cores"
+        # checkbox, because -1 as a default can exhaust RAM on low-memory machines.
+        self.jobs.setValue(1)
         self.jobs.valueChanged.connect(lambda _: self._refresh_calc_jobs_table())
+        self.chk_all_cores = self._make_all_cores_checkbox(self.jobs)
         btn_info = QPushButton("Info")
         btn_info.setToolTip("Parallel jobs info")
 
@@ -2077,8 +2083,8 @@ class MainWindow(QMainWindow):
             info = """
             Number of parallel jobs to use during
             processing.
-            Default is 1. Use -1 to utilize all
-            available CPU cores.
+            Default is 1 (safe). Tick "All cores" (or
+            set -1) to use all available CPU cores.
 
             ⚠️ Recommendation based on system
             memory:
@@ -2098,8 +2104,13 @@ class MainWindow(QMainWindow):
         row_jobs = QWidget()
         jobs_lay = QHBoxLayout(row_jobs)
         jobs_lay.setContentsMargins(0, 0, 0, 0)
+        self.btn_reset_jobs = QPushButton("Reset defaults")
+        self.btn_reset_jobs.setToolTip("Reset calculation and plotting jobs to the safe default (1 core).")
+        self.btn_reset_jobs.clicked.connect(self._reset_parallel_defaults)
         jobs_lay.addWidget(self.jobs)
+        jobs_lay.addWidget(self.chk_all_cores)
         jobs_lay.addWidget(btn_info)
+        jobs_lay.addWidget(self.btn_reset_jobs)
         calc_form.addRow("Calculation n_jobs:", row_jobs)
 
         self.chk_calc_per_dataset_jobs = QCheckBox("Use per-dataset n_jobs override")
@@ -2184,8 +2195,15 @@ class MainWindow(QMainWindow):
 
         self.plot_jobs = QSpinBox()
         self.plot_jobs.setRange(-1, os.cpu_count() or 1)
-        self.plot_jobs.setValue(self.jobs.value())
-        plot_form.addRow("Plotting n_jobs:", self.plot_jobs)
+        self.plot_jobs.setValue(1)
+        self.chk_plot_all_cores = self._make_all_cores_checkbox(self.plot_jobs)
+        plot_jobs_row = QWidget()
+        plot_jobs_lay = QHBoxLayout(plot_jobs_row)
+        plot_jobs_lay.setContentsMargins(0, 0, 0, 0)
+        plot_jobs_lay.addWidget(self.plot_jobs)
+        plot_jobs_lay.addWidget(self.chk_plot_all_cores)
+        plot_jobs_lay.addStretch(1)
+        plot_form.addRow("Plotting n_jobs:", plot_jobs_row)
 
         self.plot_input_tsv = QLineEdit()
         self.plot_input_tsv.setPlaceholderText("Optional: desc-GlobalQualityIndexAttempt*_*.tsv")
@@ -2707,8 +2725,87 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _make_all_cores_checkbox(self, spin: QSpinBox) -> QCheckBox:
+        """Return an "All cores" checkbox wired to a jobs spinbox.
+
+        Ticking it sets the spinbox to -1 (use every core) and disables it;
+        unticking restores the previous manual value. This keeps the safe
+        default (1 job) while giving a one-click way to use all cores, which
+        can exhaust RAM on low-memory machines if made the default.
+        """
+        chk = QCheckBox("All cores")
+        chk.setToolTip("Use every CPU core (sets n_jobs = -1). Fast, but needs "
+                       "plenty of RAM; leave off if unsure.")
+        prev = {"v": max(1, spin.value())}
+
+        def _toggle(checked: bool):
+            if checked:
+                prev["v"] = spin.value() if spin.value() >= 1 else 1
+                spin.setValue(-1)
+                spin.setEnabled(False)
+            else:
+                spin.setEnabled(True)
+                spin.setValue(prev["v"])
+
+        chk.toggled.connect(_toggle)
+        return chk
+
+    def _persist_parallel_options(self):
+        """Save the calculation/plotting parallel settings to QSettings so they
+        survive GUI restarts. Stores the effective spinbox value (-1 when All
+        cores) plus each All-cores flag."""
+        if getattr(self, "_loading_parallel", False):
+            return
+        s = self.settings_store
+        s.setValue("run/calc_jobs", int(self.jobs.value()))
+        s.setValue("run/calc_all_cores", bool(self.chk_all_cores.isChecked()))
+        s.setValue("run/plot_jobs", int(self.plot_jobs.value()))
+        s.setValue("run/plot_all_cores", bool(self.chk_plot_all_cores.isChecked()))
+
+    def _restore_parallel_options(self):
+        """Restore saved parallel settings, then wire change-persistence."""
+        self._loading_parallel = True
+        try:
+            s = self.settings_store
+            for spin, chk, jkey, akey in (
+                (self.jobs, self.chk_all_cores, "run/calc_jobs", "run/calc_all_cores"),
+                (self.plot_jobs, self.chk_plot_all_cores, "run/plot_jobs", "run/plot_all_cores"),
+            ):
+                all_cores = bool(s.value(akey, False, type=bool))
+                val = int(s.value(jkey, 1, type=int))
+                if all_cores:
+                    spin.setValue(1)          # base value under the checkbox
+                    chk.setChecked(True)      # -> sets spin to -1 and disables it
+                else:
+                    chk.setChecked(False)
+                    spin.setValue(val if val >= 1 else 1)
+        finally:
+            self._loading_parallel = False
+        # Persist on any later change.
+        self.jobs.valueChanged.connect(lambda _: self._persist_parallel_options())
+        self.chk_all_cores.toggled.connect(lambda _: self._persist_parallel_options())
+        self.plot_jobs.valueChanged.connect(lambda _: self._persist_parallel_options())
+        self.chk_plot_all_cores.toggled.connect(lambda _: self._persist_parallel_options())
+
+    def _reset_parallel_defaults(self):
+        """Restore the safe default: 1 core for calculation and plotting."""
+        self.chk_all_cores.setChecked(False)
+        self.jobs.setValue(1)
+        self.chk_plot_all_cores.setChecked(False)
+        self.plot_jobs.setValue(1)
+        self._refresh_calc_jobs_table()
+        self._persist_parallel_options()
+
     def _toggle_calc_jobs_table(self, checked: bool):
         self._refresh_calc_jobs_table()
+
+    def _calc_jobs_row_spin(self, row: int) -> Optional[QSpinBox]:
+        """The n_jobs QSpinBox for a per-dataset override row (the cell holds a
+        spinbox + an 'All cores' checkbox in a container)."""
+        cell = self.calc_jobs_table.cellWidget(row, 1)
+        if isinstance(cell, QSpinBox):
+            return cell
+        return cell.findChild(QSpinBox) if cell is not None else None
 
     def _refresh_calc_jobs_table(self):
         if not hasattr(self, "calc_jobs_table"):
@@ -2718,7 +2815,7 @@ class MainWindow(QMainWindow):
         current_subjects: Dict[str, str] = {}
         for row in range(self.calc_jobs_table.rowCount()):
             item = self.calc_jobs_table.item(row, 0)
-            spin = self.calc_jobs_table.cellWidget(row, 1)
+            spin = self._calc_jobs_row_spin(row)
             subs_widget = self.calc_jobs_table.cellWidget(row, 2)
             if item is not None and spin is not None:
                 current_values[item.text()] = int(spin.value())
@@ -2733,9 +2830,20 @@ class MainWindow(QMainWindow):
             self.calc_jobs_table.setItem(row, 0, ds_item)
             spin = QSpinBox()
             spin.setRange(-1, max_jobs)
-            spin.setValue(current_values.get(ds, self.jobs.value()))
-            spin.setEnabled(allow_njobs_override)
-            self.calc_jobs_table.setCellWidget(row, 1, spin)
+            restored = current_values.get(ds, self.jobs.value())
+            spin.setValue(restored if restored >= 1 else 1)
+            all_cores = self._make_all_cores_checkbox(spin)
+            if restored == -1:
+                all_cores.setChecked(True)  # reflect a saved all-cores override
+            spin.setEnabled(allow_njobs_override and not all_cores.isChecked())
+            all_cores.setEnabled(allow_njobs_override)
+            cell = QWidget()
+            cell_lay = QHBoxLayout(cell)
+            cell_lay.setContentsMargins(0, 0, 0, 0)
+            cell_lay.setSpacing(6)
+            cell_lay.addWidget(spin)
+            cell_lay.addWidget(all_cores)
+            self.calc_jobs_table.setCellWidget(row, 1, cell)
             subs_edit = QLineEdit()
             subs_edit.setPlaceholderText("all or comma-separated IDs")
             subs_edit.setText(current_subjects.get(ds, "all"))
@@ -2800,7 +2908,7 @@ class MainWindow(QMainWindow):
         overrides: Dict[str, int] = {}
         for row in range(self.calc_jobs_table.rowCount()):
             item = self.calc_jobs_table.item(row, 0)
-            spin = self.calc_jobs_table.cellWidget(row, 1)
+            spin = self._calc_jobs_row_spin(row)
             if item is None or spin is None:
                 continue
             overrides[item.text()] = int(spin.value())

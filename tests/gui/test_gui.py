@@ -15,6 +15,19 @@ def qapp():
     yield QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _clean_run_settings(qapp):
+    """Isolate the persisted parallel (run/) settings so tests are deterministic
+    and never leave values in the real QSettings store."""
+    from PyQt6.QtCore import QSettings
+    s = QSettings("ANCP", "MEEGqc")
+    s.remove("run")
+    s.sync()
+    yield
+    s.remove("run")
+    s.sync()
+
+
 @pytest.fixture
 def main_window(qapp):
     from meg_qc.miscellaneous.GUI.megqcGUI import MainWindow
@@ -87,6 +100,46 @@ def test_compute_gqi_greys_rows_but_keeps_switch(settings_dialog, qapp):
     for k in others:
         assert not dlg.widgets[("GlobalQualityIndex", k)][0].isEnabled()
         assert not dlg.labels[("GlobalQualityIndex", k)].isEnabled()
+
+
+def test_njobs_default_is_safe_and_all_cores_toggles(main_window, qapp):
+    """Calc/plot jobs default to 1 (not -1); the 'All cores' checkbox sets -1
+    and restores the previous value when unticked."""
+    w = main_window
+    assert w.jobs.value() == 1
+    assert w.plot_jobs.value() == 1
+    assert not w.chk_all_cores.isChecked()
+
+    w.jobs.setValue(4); qapp.processEvents()
+    w.chk_all_cores.setChecked(True); qapp.processEvents()
+    assert w.jobs.value() == -1 and not w.jobs.isEnabled()
+    w.chk_all_cores.setChecked(False); qapp.processEvents()
+    assert w.jobs.value() == 4 and w.jobs.isEnabled()
+
+    w.chk_plot_all_cores.setChecked(True); qapp.processEvents()
+    assert w.plot_jobs.value() == -1 and not w.plot_jobs.isEnabled()
+    w.chk_plot_all_cores.setChecked(False); qapp.processEvents()
+    assert w.plot_jobs.value() == 1 and w.plot_jobs.isEnabled()
+
+
+def test_reset_parallel_defaults_and_persistence(qapp):
+    """Reset-defaults restores 1 core; the parallel settings persist across a
+    fresh window."""
+    from meg_qc.miscellaneous.GUI.megqcGUI import MainWindow
+    w = MainWindow()
+    try:
+        w.jobs.setValue(5); w.chk_plot_all_cores.setChecked(True); qapp.processEvents()
+        w2 = MainWindow()  # restores from QSettings
+        try:
+            assert w2.jobs.value() == 5
+            assert w2.chk_plot_all_cores.isChecked() and w2.plot_jobs.value() == -1
+            w2._reset_parallel_defaults(); qapp.processEvents()
+            assert w2.jobs.value() == 1 and not w2.chk_all_cores.isChecked()
+            assert w2.plot_jobs.value() == 1 and not w2.chk_plot_all_cores.isChecked()
+        finally:
+            w2.close()
+    finally:
+        w.close()
 
 
 def test_greyout_dims_label_not_just_field(settings_dialog, qapp):

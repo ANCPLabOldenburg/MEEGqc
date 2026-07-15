@@ -985,6 +985,7 @@ def _infer_updatemenu_title(menu, idx: int) -> str:
             return "Dot size level"
         if "line.width" in arg_keys:
             return "Line thickness level"
+        return "Style level"
 
     return f"Figure control {idx + 1}"
 
@@ -2079,7 +2080,8 @@ _PLOT_SETTINGS_CSS = """
     .ps-scope { flex: 1; padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.2);
       background: #fff; font-size: 13px; }
     .ps-group { margin-bottom: 14px; }
-    .ps-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 5px; }
+    .ps-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 2px; }
+    .ps-hint { font-size: 11px; color: #8a94a0; font-style: italic; margin-bottom: 5px; }
     .ps-row { display: flex; flex-wrap: wrap; gap: 6px; }
     .ps-btn { padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.15);
       background: #f4f6f8; font-size: 12px; cursor: pointer; }
@@ -2097,7 +2099,7 @@ _PLOT_SETTINGS_HTML = """
         <span class="ps-head-title">Plot settings</span>
         <button id="plot-settings-close" type="button" class="ps-close" aria-label="Close">&times;</button>
       </div>
-      <p class="ps-note">Choose a scope, then set an option once. "All plots" changes every plot that has the control; a specific plot type changes only those (and overrides the general choice for them). Choices are remembered.</p>
+      <p class="ps-note">Set a display option once and apply it to many plots. Choose a scope, then pick a value: "All plots" sets the option on every plot type that has it; a specific plot type changes only those. Under "All plots" each option notes which plot types it belongs to. Choices are remembered.</p>
       <div id="plot-settings-body" class="ps-body"></div>
     </div>
   </div>
@@ -2106,8 +2108,8 @@ _PLOT_SETTINGS_HTML = """
 _PLOT_SETTINGS_JS = """
       // ---- Plot settings master panel: General (all plots) + per-plot-kind ----
       var __psRegistry = [];   // [{plotEl, groups, kind}]
-      var __psMaster = {};     // scope -> {control title -> chosen label}; '*' = all plots
-      var __psScope = '*';     // scope currently selected in the panel
+      var __psMaster = {};     // plot kind -> {control title -> chosen label}
+      var __psScope = '*';     // scope selected in the panel ('*' = All plots / general)
       var __PS_STORAGE_KEY = 'meegqc-plot-settings';
 
       function __psSave() {
@@ -2121,6 +2123,9 @@ _PLOT_SETTINGS_JS = """
           var raw = localStorage.getItem(__PS_STORAGE_KEY);
           if (raw) { var obj = JSON.parse(raw); if (obj && typeof obj === 'object') __psMaster = obj; }
         } catch (e) {}
+        // Older reports stored a separate '*' (general) bucket; the general scope
+        // now writes straight into each kind's bucket, so drop any stale one.
+        if (__psMaster && __psMaster['*']) { delete __psMaster['*']; }
       }
 
       function __psFindButton(group, label) {
@@ -2142,14 +2147,13 @@ _PLOT_SETTINGS_JS = """
           });
         });
       }
-      // Effective label for a control on a plot of a given kind: a per-kind
-      // choice overrides the general ('*') choice.
+      // Effective label for a control on a plot of a given kind. Choices live in
+      // per-kind buckets; the general scope writes the SAME value into every kind
+      // that has the control (see __psSetChoice), so general and per-kind always
+      // agree instead of masking each other.
       function __psEffective(kind, title) {
         var byKind = __psMaster[kind];
-        if (byKind && byKind[title] !== undefined) return byKind[title];
-        var gen = __psMaster['*'];
-        if (gen && gen[title] !== undefined) return gen[title];
-        return undefined;
+        return (byKind && byKind[title] !== undefined) ? byKind[title] : undefined;
       }
       function __psApplyEntryTitle(entry, title) {
         var label = __psEffective(entry.kind, title);
@@ -2170,11 +2174,46 @@ _PLOT_SETTINGS_JS = """
         __psRegistry.push(entry);
         __psApplyEntryAll(entry);
       }
-      function __psApplyMaster(scope, title, label) {
-        if (!__psMaster[scope]) __psMaster[scope] = {};
-        __psMaster[scope][title] = label;
+      // Which plot kinds expose a control with a given title (read from the
+      // payloads, so it covers plots that have not lazily rendered yet). Used to
+      // fan the general scope out to every relevant kind and to annotate titles.
+      function __psTitleKinds() {
+        var map = {};
+        __psAllPayloads().forEach(function(p) {
+          var kind = p.kind || 'Other';
+          (Array.isArray(p.controls) ? p.controls : []).forEach(function(g) {
+            var t = String((g && g.title) || 'Control');
+            (map[t] || (map[t] = {}))[kind] = 1;
+          });
+        });
+        var out = {};
+        Object.keys(map).forEach(function(t) { out[t] = Object.keys(map[t]).sort(); });
+        return out;
+      }
+      function __psSetChoice(scope, title, label) {
+        if (scope === '*') {
+          // General = one shared value applied to EVERY plot kind that has this
+          // control, so it is never masked by a per-kind choice and the two
+          // views stay in sync.
+          (__psTitleKinds()[title] || []).forEach(function(k) {
+            (__psMaster[k] || (__psMaster[k] = {}))[title] = label;
+          });
+        } else {
+          (__psMaster[scope] || (__psMaster[scope] = {}))[title] = label;
+        }
         __psSave();
         __psRegistry.forEach(function(entry) { __psApplyEntryTitle(entry, title); });
+      }
+      // A button is active in the general scope only when every kind that has the
+      // control agrees on the label; in a per-kind scope when that kind holds it.
+      function __psIsActive(scope, title, label) {
+        if (scope === '*') {
+          var kinds = __psTitleKinds()[title] || [];
+          return kinds.length > 0 && kinds.every(function(k) {
+            return __psMaster[k] && __psMaster[k][title] === label;
+          });
+        }
+        return !!(__psMaster[scope] && __psMaster[scope][title] === label);
       }
       function __psAllPayloads() {
         var out = [];
@@ -2184,6 +2223,8 @@ _PLOT_SETTINGS_JS = """
         });
         return out;
       }
+      // Every figure kind that carries at least one adjustable control becomes a
+      // scope in the panel (a per-kind choice overrides the general one).
       function __psKinds() {
         var seen = {}; var order = [];
         __psAllPayloads().forEach(function(p) {
@@ -2216,17 +2257,28 @@ _PLOT_SETTINGS_JS = """
         cont.innerHTML = '';
         var unique = __psCollectUnique(__psScope);
         if (unique.length === 0) { cont.innerHTML = "<p class='ps-empty'>No adjustable options for this selection.</p>"; return; }
-        var chosen = __psMaster[__psScope] || {};
+        var titleKinds = (__psScope === '*') ? __psTitleKinds() : null;
         unique.forEach(function(ctrl) {
           var g = document.createElement('div'); g.className = 'ps-group';
           var t = document.createElement('div'); t.className = 'ps-title'; t.textContent = ctrl.title; g.appendChild(t);
+          // In the general scope, name the plot type(s) each control belongs to
+          // (e.g. "3D cap display" is only in Topography 3D) so the merged list
+          // is understandable.
+          if (titleKinds) {
+            var kinds = titleKinds[ctrl.title] || [];
+            if (kinds.length) {
+              var h = document.createElement('div'); h.className = 'ps-hint';
+              h.textContent = (kinds.length === 1 ? 'Only in ' : 'In ') + kinds.join(', ');
+              g.appendChild(h);
+            }
+          }
           var row = document.createElement('div'); row.className = 'ps-row';
           ctrl.labels.forEach(function(label) {
             var b = document.createElement('button'); b.type = 'button';
-            b.className = 'ps-btn' + (chosen[ctrl.title] === label ? ' active' : '');
+            b.className = 'ps-btn' + (__psIsActive(__psScope, ctrl.title, label) ? ' active' : '');
             b.textContent = label;
             b.addEventListener('click', function() {
-              __psApplyMaster(__psScope, ctrl.title, label);
+              __psSetChoice(__psScope, ctrl.title, label);
               Array.prototype.forEach.call(row.querySelectorAll('.ps-btn'), function(x) { x.classList.remove('active'); });
               b.classList.add('active');
             });

@@ -60,6 +60,12 @@ from meg_qc.plotting.meg_qc_dataset_plots import (
     plot_topomap_if_available,
     plot_violin_with_subject_jitter,
 )
+# Shared "Plot settings" panel (issue #136) - one source of truth across reports.
+from meg_qc.plotting.meg_qc_plots import (
+    _PLOT_SETTINGS_CSS,
+    _PLOT_SETTINGS_HTML,
+    _PLOT_SETTINGS_JS,
+)
 
 MAX_POINTS_SCATTER = 4000
 
@@ -1840,9 +1846,11 @@ def _build_multi_dataset_report_html(
       to {{ transform: rotate(360deg); }}
     }}
 {settings_css}
+{_PLOT_SETTINGS_CSS}
   </style>
 </head>
 <body>
+  {_PLOT_SETTINGS_HTML}
   <div id=\"report-loading-overlay\" class=\"loading-overlay\">
     <div class=\"loading-card\">
       <div class=\"loading-spinner\"></div>
@@ -1936,7 +1944,7 @@ def _build_multi_dataset_report_html(
         }}
       }}
 
-      function renderExternalControls(plotEl, controls) {{
+      function renderExternalControls(plotEl, controls, kind) {{
         const wrap = plotEl ? plotEl.closest('.lazy-plot-wrap') : null;
         const panel = wrap ? wrap.querySelector('.plot-controls') : null;
         if (!panel) {{
@@ -1981,6 +1989,7 @@ def _build_multi_dataset_report_html(
           gEl.appendChild(row);
           panel.appendChild(gEl);
         }});
+        if (typeof __psRegisterPlot === 'function') {{ __psRegisterPlot(plotEl, groups, kind); }}
       }}
 
       const summaryStyleState = {{}};
@@ -2063,7 +2072,11 @@ def _build_multi_dataset_report_html(
         const traceIdx = [];
         idxs.forEach((i) => {{
           if (!plotEl.__summaryBaseX.hasOwnProperty(i)) {{
-            const rawX = plotEl.data[i] && plotEl.data[i].x;
+            // Read the DECODED x. Plotly leaves gd.data[i].x as the raw
+            // {{dtype,bdata}} base64 typed-array spec (Array.from() of which is
+            // empty -> the dots would vanish); the decoded array is in _fullData.
+            const fdX = (plotEl._fullData && plotEl._fullData[i]) ? plotEl._fullData[i].x : null;
+            const rawX = (fdX != null) ? fdX : (plotEl.data[i] && plotEl.data[i].x);
             const base = (rawX != null) ? Array.from(rawX) : [];
             plotEl.__summaryBaseX[i] = base;
           }}
@@ -2182,7 +2195,7 @@ def _build_multi_dataset_report_html(
               }}
               return undefined;
             }}).then(() => {{
-              renderExternalControls(el, payload.controls || []);
+              renderExternalControls(el, payload.controls || [], payload.kind || 'Other');
             }});
             el.dataset.rendered = '1';
             renderPromises.push(withFrames.catch(() => undefined));
@@ -2214,6 +2227,7 @@ def _build_multi_dataset_report_html(
         }});
       }}
 
+{_PLOT_SETTINGS_JS}
       function applyGridToPlot(plotEl, show) {{
         if (typeof Plotly === 'undefined' || !plotEl) {{
           return;

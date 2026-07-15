@@ -28,6 +28,15 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.utils import PlotlyJSONEncoder
 
+# Shared "Plot settings" panel (issue #136) - one source of truth across reports.
+from meg_qc.plotting.meg_qc_plots import (
+    _PLOT_SETTINGS_CSS,
+    _PLOT_SETTINGS_HTML,
+    _PLOT_SETTINGS_JS,
+    _infer_figure_kind,
+    _infer_updatemenu_title,
+)
+
 import meg_qc
 from meg_qc.calculation.meg_qc_pipeline import resolve_analysis_root
 
@@ -387,7 +396,11 @@ def _load_one_dataset_bundle(
 
     dfs = []
     for tp in all_tsvs:
-        df_part = pd.read_csv(tp, sep="\t", low_memory=False)
+        # Keep BIDS entity labels as strings so leading zeros survive
+        # (e.g. session "01" must not be parsed to the integer 1 -> "ses-1").
+        df_part = pd.read_csv(
+            tp, sep="\t", low_memory=False, dtype={"session": str, "subject": str, "run": str}
+        )
         # Tag modality from filename or parent directory
         if "modality" not in df_part.columns:
             tname = tp.name.lower()
@@ -441,18 +454,30 @@ def _prepare_table(df: pd.DataFrame) -> pd.DataFrame:
     out["task"] = out["task"].fillna("unknown").astype(str)
     out["task_label"] = out["task"].astype(str)  # Clean label: just the task name (e.g. 'rest', not 'task=rest')
 
-    # Build recording_label: sub + task [+ run when present] — uniquely identifies a BIDS recording
+    # A ses-<label> component keeps two sessions of the same subject/task/run
+    # apart in the recording label (empty for datasets without sessions).
+    if "session" in out.columns:
+        out["session"] = out["session"].fillna("").astype(str)
+        _ses = out["session"].apply(
+            lambda s: f"|ses-{s}" if s not in ("n/a", "nan", "") else ""
+        )
+    else:
+        _ses = ""
+
+    # Build recording_label: sub [+ ses] + task [+ run when present] — uniquely identifies a BIDS recording
     if "run" in out.columns:
         out["run"] = out["run"].fillna("n/a").astype(str)
         out["recording_label"] = out.apply(
             lambda r: (
-                r["subject"] + "|" + r["task_label"]
+                r["subject"]
+                + (f"|ses-{r['session']}" if str(r.get("session", "")) not in ("n/a", "nan", "") else "")
+                + "|" + r["task_label"]
                 + (f"|run-{r['run']}" if r["run"] not in ("n/a", "nan", "") else "")
             ),
             axis=1,
         )
     else:
-        out["recording_label"] = out["subject"] + "|" + out["task_label"]
+        out["recording_label"] = out["subject"] + _ses + "|" + out["task_label"]
 
     if {"Muscle_events_num", "Muscle_events_total"}.issubset(out.columns):
         num = _coerce_numeric(out["Muscle_events_num"])
@@ -971,38 +996,8 @@ def _attach_axis_label_size_controller(fig: go.Figure) -> None:
     fig.update_layout(updatemenus=existing)
 
 
-def _infer_updatemenu_title(menu, idx: int) -> str:
-    explicit = str(getattr(menu, "name", "") or "").strip()
-    if explicit:
-        return explicit
-    buttons = list(getattr(menu, "buttons", []) or [])
-    labels: List[str] = [str(getattr(btn, "label", "") or "").strip() for btn in buttons]
-    low = " ".join(l.lower() for l in labels)
-    if "heat:" in low:
-        return "Heat summary variant"
-    if "top:" in low:
-        return "Top profile summary"
-    if "right:" in low:
-        return "Right profile summary"
-    if "cap" in low:
-        return "3D cap display"
-    if labels and all(l in {str(i) for i in range(1, 9)} for l in labels):
-        methods = {str(getattr(btn, "method", "") or "").lower() for btn in buttons}
-        arg_keys: set[str] = set()
-        for btn in buttons:
-            args = getattr(btn, "args", None)
-            if isinstance(args, (list, tuple)) and args:
-                first = args[0]
-                if isinstance(first, dict):
-                    arg_keys.update(str(k) for k in first.keys())
-        if "relayout" in methods:
-            return "Axis label/ticks size level"
-        if "marker.size" in arg_keys:
-            return "Dot size level"
-        if "line.width" in arg_keys:
-            return "Line thickness level"
-        return "Style level"
-    return f"Figure control {idx + 1}"
+# _infer_updatemenu_title is imported from meg_qc_plots (shared, improved so every
+# control gets a real title instead of "Figure control N").
 
 
 def _encapsulate_updatemenus_panel(fig: go.Figure) -> None:
@@ -2106,6 +2101,7 @@ def _register_lazy_figure(fig: go.Figure, *, height_px: str, controls: Optional[
             "figure": fig.to_plotly_json(),
             "config": {"responsive": True, "displaylogo": False},
             "controls": controls or [],
+            "kind": _infer_figure_kind(fig),
         },
         cls=PlotlyJSONEncoder,
         separators=(",", ":"),
@@ -2915,9 +2911,11 @@ def _build_report_html(
     .loading-subtitle {{ color: #334e68; font-size: 13px; }}
     @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
 {settings_css}
+{_PLOT_SETTINGS_CSS}
   </style>
 </head>
 <body>
+  {_PLOT_SETTINGS_HTML}
   <div id="report-loading-overlay" class="loading-overlay">
     <div class="loading-card">
       <div class="loading-spinner"></div>
@@ -2999,7 +2997,7 @@ def _build_report_html(
         }}
       }}
 
-      function renderExternalControls(plotEl, controls) {{
+      function renderExternalControls(plotEl, controls, kind) {{
         const wrap = plotEl ? plotEl.closest('.lazy-plot-wrap') : null;
         const panel = wrap ? wrap.querySelector('.plot-controls') : null;
         if (!panel) {{
@@ -3044,6 +3042,7 @@ def _build_report_html(
           gEl.appendChild(row);
           panel.appendChild(gEl);
         }});
+        if (typeof __psRegisterPlot === 'function') {{ __psRegisterPlot(plotEl, groups, kind); }}
       }}
 
       const summaryStyleState = {{}};
@@ -3126,7 +3125,11 @@ def _build_report_html(
         const traceIdx = [];
         idxs.forEach((i) => {{
           if (!plotEl.__summaryBaseX.hasOwnProperty(i)) {{
-            const rawX = plotEl.data[i] && plotEl.data[i].x;
+            // Read the DECODED x. Plotly leaves gd.data[i].x as the raw
+            // {{dtype,bdata}} base64 typed-array spec (Array.from() of which is
+            // empty -> the dots would vanish); the decoded array is in _fullData.
+            const fdX = (plotEl._fullData && plotEl._fullData[i]) ? plotEl._fullData[i].x : null;
+            const rawX = (fdX != null) ? fdX : (plotEl.data[i] && plotEl.data[i].x);
             const base = (rawX != null) ? Array.from(rawX) : [];
             plotEl.__summaryBaseX[i] = base;
           }}
@@ -3229,7 +3232,7 @@ def _build_report_html(
             const p = Plotly.newPlot(el, payload.figure.data || [], payload.figure.layout || {{}}, payload.config || {{responsive: true, displaylogo: false}});
             const post = (p && typeof p.then === 'function') ? p : Promise.resolve(p);
             const withControls = post.then(() => {{
-              renderExternalControls(el, payload.controls || []);
+              renderExternalControls(el, payload.controls || [], payload.kind || 'Other');
             }});
             el.dataset.rendered = '1';
             renderPromises.push(withControls.catch(() => undefined));
@@ -3259,6 +3262,7 @@ def _build_report_html(
         }});
       }}
 
+{_PLOT_SETTINGS_JS}
       function applyGridToPlot(plotEl, show) {{
         if (typeof Plotly === 'undefined' || !plotEl) return;
         const layout = plotEl.layout || {{}};

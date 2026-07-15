@@ -82,6 +82,17 @@ def _extract_task_label(path: str) -> str:
     return f"{task} (run-{run_match.group(0)})"
 
 
+def _extract_session_label(path: str) -> str:
+    """Return the BIDS ``ses-<label>`` value from a filename, or ``""``.
+
+    Session-nested derivatives (issue #132) carry a ``ses-<label>`` entity in
+    both the path and the filename. Reading it from the filename keeps the
+    group table able to tell apart two sessions of the same subject/task/run.
+    """
+    match = re.search(r"(?<=_ses-)[^_]+", os.path.basename(path))
+    return match.group(0) if match else ""
+
+
 def _get_sensor_param(section: dict, subsection: str, param: str, preferred: str = "mag", fallback: str = "grad"):
     """Return a sensor-specific parameter preferring magnetometers when present.
 
@@ -664,27 +675,37 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
     os.makedirs(attempt_dir, exist_ok=True)
 
     # Search for SimpleMetrics JSON files in both modality subfolders and
-    # legacy flat layout.  The glob patterns cover:
-    #   calculation/meg/sub-XXX/*SimpleMetrics_meg.json   (new layout)
-    #   calculation/eeg/sub-XXX/*SimpleMetrics_eeg.json   (new layout)
-    #   calculation/sub-XXX/*SimpleMetrics_meg.json        (legacy layout)
-    #   calculation/sub-XXX/*SimpleMetrics_eeg.json        (legacy layout)
+    # legacy flat layout.  The ``**`` (recursive) segment makes each pattern
+    # match BOTH a direct child of sub-XXX AND a ses-YYY nested child, so the
+    # glob covers:
+    #   calculation/meg/sub-XXX[/ses-YYY]/*SimpleMetrics_meg.json   (new layout)
+    #   calculation/eeg/sub-XXX[/ses-YYY]/*SimpleMetrics_eeg.json   (new layout)
+    #   calculation/sub-XXX[/ses-YYY]/*SimpleMetrics_meg.json        (legacy layout)
+    #   calculation/sub-XXX[/ses-YYY]/*SimpleMetrics_eeg.json        (legacy layout)
+    # The ses-YYY level is inserted for datasets with a BIDS session entity
+    # (issue #132 session-folder derivatives); the older non-recursive patterns
+    # missed it, so session datasets produced no GQI table at all.
     _json_patterns = [
-        os.path.join(calc_dir, "meg", "sub-*", "*SimpleMetrics_meg.json"),
-        os.path.join(calc_dir, "eeg", "sub-*", "*SimpleMetrics_eeg.json"),
-        os.path.join(calc_dir, "sub-*", "*SimpleMetrics_meg.json"),
-        os.path.join(calc_dir, "sub-*", "*SimpleMetrics_eeg.json"),
+        os.path.join(calc_dir, "meg", "sub-*", "**", "*SimpleMetrics_meg.json"),
+        os.path.join(calc_dir, "eeg", "sub-*", "**", "*SimpleMetrics_eeg.json"),
+        os.path.join(calc_dir, "sub-*", "**", "*SimpleMetrics_meg.json"),
+        os.path.join(calc_dir, "sub-*", "**", "*SimpleMetrics_eeg.json"),
     ]
     _seen_json = set()
     summary_paths = []
     for pattern in _json_patterns:
-        for json_path in glob.glob(pattern):
+        for json_path in glob.glob(pattern, recursive=True):
             real = os.path.realpath(json_path)
             if real in _seen_json:
                 continue
             _seen_json.add(real)
-            sub_dir = os.path.basename(os.path.dirname(json_path))
-            out_sub = os.path.join(attempt_dir, sub_dir)
+            # Derive the subject from the filename, not the parent folder: under
+            # the ses-YYY nesting the parent folder is ``ses-YYY`` rather than
+            # ``sub-XXX``. The output stays grouped per subject; distinct
+            # sessions never collide because the source filename carries ses-YYY.
+            _sub_match = re.search(r"sub-[A-Za-z0-9]+", os.path.basename(json_path))
+            subject_label = _sub_match.group(0) if _sub_match else os.path.basename(os.path.dirname(json_path))
+            out_sub = os.path.join(attempt_dir, subject_label)
             os.makedirs(out_sub, exist_ok=True)
             # BIDS entity labels must be alphanumeric, so the attempt is folded
             # into the desc as CamelCase (GlobalSummaryReportAttempt<N>).
@@ -693,7 +714,8 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
             # Generate per-subject summary JSON (no HTML)
             create_summary_report(json_path, None, out_json, gqi_params)
             task_label = _extract_task_label(json_path)
-            summary_paths.append((out_json, task_label))
+            session_label = _extract_session_label(json_path)
+            summary_paths.append((out_json, task_label, subject_label, session_label))
 
     # Collate per-subject summaries into a group table
     group_dir = os.path.join(reports_root, "group_metrics")
@@ -703,12 +725,11 @@ def generate_gqi_summary(dataset_path: str, megqc_root: str, config_file: str) -
     # Separate summary paths by modality based on their BIDS suffix
     meg_rows = []
     eeg_rows = []
-    for path, task in summary_paths:
+    for path, task, subject, session in summary_paths:
         # Flatten each summary JSON into a one-row dictionary
         with open(path, "r", encoding="utf-8") as f:
             js = json.load(f)
-        subject = os.path.basename(os.path.dirname(path))
-        row = {"task": task, "subject": subject}
+        row = {"task": task, "session": session, "subject": subject}
         row.update(flatten_summary_metrics(js))
 
         # Determine modality from the source file path or suffix

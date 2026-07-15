@@ -168,6 +168,22 @@ def two_datasets():
 
 
 @pytest.fixture
+def named_dataset():
+    """Return a bundle dataset's path by its exact directory name; skip if absent.
+
+    Lets a test target a specific dataset (e.g. ``ds_camcan`` for all-metrics
+    coverage, ``ds_1`` for a session-nested one) while still degrading to a skip
+    on bundles that do not ship that dataset.
+    """
+    def _get(name: str) -> Path:
+        for n, p in ALL_DATASETS:
+            if n == name:
+                return p
+        pytest.skip(f"dataset {name!r} not in the MEEGQC_TEST_DATA bundle")
+    return _get
+
+
+@pytest.fixture
 def isolated_dataset(tmp_path):
     """Copy a fixture dataset into tmp_path so the run writes derivatives there."""
     def _copy(ds_path: Path) -> Path:

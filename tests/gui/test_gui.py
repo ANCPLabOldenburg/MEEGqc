@@ -110,11 +110,14 @@ def test_njobs_default_is_safe_and_all_cores_toggles(main_window, qapp):
     assert w.plot_jobs.value() == 1
     assert not w.chk_all_cores.isChecked()
 
-    w.jobs.setValue(4); qapp.processEvents()
+    # Use a value within the CPU-capped range: the spinbox max is os.cpu_count()
+    # (few cores on CI runners), so a hard-coded 4 would clamp to the maximum.
+    n = w.jobs.maximum()
+    w.jobs.setValue(n); qapp.processEvents()
     w.chk_all_cores.setChecked(True); qapp.processEvents()
     assert w.jobs.value() == -1 and not w.jobs.isEnabled()
     w.chk_all_cores.setChecked(False); qapp.processEvents()
-    assert w.jobs.value() == 4 and w.jobs.isEnabled()
+    assert w.jobs.value() == n and w.jobs.isEnabled()
 
     w.chk_plot_all_cores.setChecked(True); qapp.processEvents()
     assert w.plot_jobs.value() == -1 and not w.plot_jobs.isEnabled()
@@ -128,10 +131,12 @@ def test_reset_parallel_defaults_and_persistence(qapp):
     from meg_qc.miscellaneous.GUI.megqcGUI import MainWindow
     w = MainWindow()
     try:
-        w.jobs.setValue(5); w.chk_plot_all_cores.setChecked(True); qapp.processEvents()
+        # Value within the CPU-capped range (spinbox max is os.cpu_count()).
+        n = w.jobs.maximum()
+        w.jobs.setValue(n); w.chk_plot_all_cores.setChecked(True); qapp.processEvents()
         w2 = MainWindow()  # restores from QSettings
         try:
-            assert w2.jobs.value() == 5
+            assert w2.jobs.value() == n
             assert w2.chk_plot_all_cores.isChecked() and w2.plot_jobs.value() == -1
             w2._reset_parallel_defaults(); qapp.processEvents()
             assert w2.jobs.value() == 1 and not w2.chk_all_cores.isChecked()

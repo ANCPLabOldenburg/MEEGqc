@@ -935,13 +935,25 @@ def _attach_axis_label_size_controller(fig: go.Figure) -> None:
 
 
 def _infer_updatemenu_title(menu, idx: int) -> str:
-    """Infer a readable external control title from updatemenu semantics."""
+    """Infer a readable external control title from updatemenu semantics.
+
+    Every control should get a descriptive title (never a generic "Figure
+    control N") so the Plot settings panel can show and deduplicate it cleanly.
+    """
     explicit = str(getattr(menu, "name", "") or "").strip()
     if explicit:
         return explicit
     buttons = list(getattr(menu, "buttons", []) or [])
     labels: List[str] = [str(getattr(btn, "label", "") or "").strip() for btn in buttons]
     low = " ".join(l.lower() for l in labels)
+    methods = {str(getattr(btn, "method", "") or "").lower() for btn in buttons}
+    arg_keys: set[str] = set()
+    for btn in buttons:
+        args = getattr(btn, "args", None)
+        if isinstance(args, (list, tuple)) and args and isinstance(args[0], dict):
+            arg_keys.update(str(k) for k in args[0].keys())
+
+    # Label-based hints
     if "heat:" in low:
         return "Heat summary variant"
     if "top:" in low:
@@ -950,21 +962,31 @@ def _infer_updatemenu_title(menu, idx: int) -> str:
         return "Right profile summary"
     if "cap" in low:
         return "3D cap display"
+    if low.startswith("channels:") or "natural order" in low or "sorted (high" in low:
+        return "Channel order"
+    if "always show" in low or "show on hover" in low:
+        return "Channel labels"
+
+    # Property-based hints (what the buttons actually change)
+    if "xaxis.type" in arg_keys:
+        return "X axis scale"
+    if "yaxis.type" in arg_keys:
+        return "Y axis scale"
+    if any(("colorscale" in k) or ("reversescale" in k) for k in arg_keys):
+        return "Colour map"
+    if "mode" in arg_keys:
+        return "Channel labels"
+
+    # Numeric 1-8 size sliders
     if labels and all(l in {str(i) for i in range(1, 9)} for l in labels):
-        methods = {str(getattr(btn, "method", "") or "").lower() for btn in buttons}
-        arg_keys: set[str] = set()
-        for btn in buttons:
-            args = getattr(btn, "args", None)
-            if isinstance(args, (list, tuple)) and args:
-                first = args[0]
-                if isinstance(first, dict):
-                    arg_keys.update(str(k) for k in first.keys())
         if "relayout" in methods:
             return "Axis label/ticks size level"
         if "marker.size" in arg_keys:
             return "Dot size level"
         if "line.width" in arg_keys:
             return "Line thickness level"
+        return "Style level"
+
     return f"Figure control {idx + 1}"
 
 
@@ -1002,6 +1024,43 @@ def _extract_figure_controls(fig: go.Figure) -> List[Dict[str, object]]:
     # Explicit assignment is more reliable than update_layout(updatemenus=[]).
     fig.layout.updatemenus = None
     return controls
+
+
+def _infer_figure_kind(fig: go.Figure) -> str:
+    """Classify a figure into a coarse plot kind for the Plot settings
+    per-type controls: Topography 3D / Topography 2D / Heatmap / Distribution /
+    Line / spectrum / Other. Inferred from the figure's traces so no per-metric
+    tagging is required.
+    """
+    data = list(getattr(fig, "data", []) or [])
+    types = [str(getattr(t, "type", "") or "scatter").lower() for t in data]
+    if any(t in ("scatter3d", "mesh3d", "surface", "cone") for t in types):
+        return "Topography 3D"
+    if any(t == "heatmap" for t in types):
+        return "Heatmap"
+    if any(t in ("box", "violin", "histogram") for t in types):
+        return "Distribution"
+    # 2D topography: a scatter whose markers are colour-mapped PER POINT (sensor
+    # values over positions), i.e. a colour scale/bar AND an array of colours.
+    for t in data:
+        marker = getattr(t, "marker", None)
+        if marker is None:
+            continue
+        color = getattr(marker, "color", None)
+        has_scale = (getattr(marker, "colorbar", None) is not None
+                     or bool(getattr(marker, "showscale", None))
+                     or getattr(marker, "colorscale", None) is not None)
+        if has_scale and color is not None and not isinstance(color, str):
+            return "Topography 2D"
+    # Line / spectrum: a scatter trace drawn with lines (PSD, amplitude curves).
+    for t in data:
+        typ = str(getattr(t, "type", "") or "scatter").lower()
+        if typ not in ("scatter", "scattergl"):
+            continue
+        mode = str(getattr(t, "mode", "") or "").lower()
+        if "lines" in mode or ("markers" not in mode and "text" not in mode):
+            return "Line / spectrum"
+    return "Other"
 
 
 def _register_lazy_plotly_figure(fig: go.Figure, *, min_height_px: int = 520) -> str:
@@ -1046,6 +1105,7 @@ def _register_lazy_plotly_figure(fig: go.Figure, *, min_height_px: int = 520) ->
             "figure": fig_out.to_plotly_json(),
             "config": {"responsive": True, "displaylogo": False},
             "controls": controls,
+            "kind": _infer_figure_kind(fig),
         },
         cls=PlotlyJSONEncoder,
         separators=(",", ":"),
@@ -1986,6 +2046,285 @@ def _build_settings_snapshot_section(config_dir: Optional[Path]) -> str:
     )
 
 
+# ===========================================================================
+# "Plot settings" master panel (issue #136): set a display control once and
+# apply it to every plot in the report that shares that control. These are
+# PLAIN strings (not f-strings) so their braces are literal; they are injected
+# into the report f-strings via {_PLOT_SETTINGS_CSS/HTML/JS} placeholders. The
+# JS reuses the existing per-figure primitives (runPlotlyControlAction,
+# getPayloadFromScript) and hooks renderExternalControls via __psRegisterPlot.
+# Controls are deduplicated by their title (the value _infer_updatemenu_title
+# assigns), so a control common to many plots appears once and drives them all.
+# ===========================================================================
+_PLOT_SETTINGS_CSS = """
+    .ps-open-btn { position: fixed; top: 12px; right: 14px; z-index: 1200;
+      padding: 7px 12px; border-radius: 8px; border: 1px solid rgba(0,0,0,0.15);
+      background: #2b6cb0; color: #fff; font-size: 13px; font-weight: 600;
+      cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.18); }
+    .ps-open-btn:hover { background: #2c5282; }
+    .ps-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35);
+      display: none; z-index: 1300; }
+    .ps-overlay.open { display: block; }
+    .ps-dialog { position: absolute; top: 0; right: 0; height: 100%; width: 340px;
+      max-width: 90vw; background: #fff; box-shadow: -4px 0 18px rgba(0,0,0,0.2);
+      padding: 16px 18px; overflow-y: auto; box-sizing: border-box; }
+    .ps-head { display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 4px; }
+    .ps-head-title { font-size: 16px; font-weight: 700; }
+    .ps-close { border: none; background: transparent; font-size: 22px; line-height: 1;
+      cursor: pointer; color: #444; }
+    .ps-note { font-size: 12px; color: #666; margin: 2px 0 12px; }
+    .ps-scope-wrap { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px;
+      padding-bottom: 12px; border-bottom: 1px solid rgba(0,0,0,0.1); }
+    .ps-scope-label { font-size: 12px; font-weight: 600; color: #333; }
+    .ps-scope { flex: 1; padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.2);
+      background: #fff; font-size: 13px; }
+    .ps-group { margin-bottom: 14px; }
+    .ps-title { font-size: 12px; font-weight: 600; color: #333; margin-bottom: 2px; }
+    .ps-hint { font-size: 11px; color: #8a94a0; font-style: italic; margin-bottom: 5px; }
+    .ps-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ps-btn { padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.15);
+      background: #f4f6f8; font-size: 12px; cursor: pointer; }
+    .ps-btn:hover { background: #e9edf1; }
+    .ps-btn.active { background: #2b6cb0; color: #fff; border-color: #2b6cb0; }
+    .ps-empty { font-size: 13px; color: #777; }
+"""
+
+_PLOT_SETTINGS_HTML = """
+  <button id="plot-settings-btn" type="button" class="ps-open-btn"
+          title="Adjust display options for all plots at once">Plot settings</button>
+  <div id="plot-settings-overlay" class="ps-overlay">
+    <div class="ps-dialog" role="dialog" aria-label="Plot settings">
+      <div class="ps-head">
+        <span class="ps-head-title">Plot settings</span>
+        <button id="plot-settings-close" type="button" class="ps-close" aria-label="Close">&times;</button>
+      </div>
+      <p class="ps-note">Set a display option once and apply it to many plots. Choose a scope, then pick a value: "All plots" sets the option on every plot type that has it; a specific plot type changes only those. Under "All plots" each option notes which plot types it belongs to. Choices are remembered.</p>
+      <div id="plot-settings-body" class="ps-body"></div>
+    </div>
+  </div>
+"""
+
+_PLOT_SETTINGS_JS = """
+      // ---- Plot settings master panel: General (all plots) + per-plot-kind ----
+      var __psRegistry = [];   // [{plotEl, groups, kind}]
+      var __psMaster = {};     // plot kind -> {control title -> chosen label}
+      var __psScope = '*';     // scope selected in the panel ('*' = All plots / general)
+      var __PS_STORAGE_KEY = 'meegqc-plot-settings';
+
+      function __psSave() {
+        // Persist choices in the browser so reopening the report keeps them.
+        // localStorage can be disabled for local files in some browsers; never
+        // let that break the report.
+        try { localStorage.setItem(__PS_STORAGE_KEY, JSON.stringify(__psMaster)); } catch (e) {}
+      }
+      function __psLoad() {
+        try {
+          var raw = localStorage.getItem(__PS_STORAGE_KEY);
+          if (raw) { var obj = JSON.parse(raw); if (obj && typeof obj === 'object') __psMaster = obj; }
+        } catch (e) {}
+        // Older reports stored a separate '*' (general) bucket; the general scope
+        // now writes straight into each kind's bucket, so drop any stale one.
+        if (__psMaster && __psMaster['*']) { delete __psMaster['*']; }
+      }
+
+      function __psFindButton(group, label) {
+        var btns = (group && Array.isArray(group.buttons)) ? group.buttons : [];
+        for (var i = 0; i < btns.length; i++) {
+          if (String((btns[i] && btns[i].label) || '') === label) return btns[i];
+        }
+        return null;
+      }
+      function __psSyncPerPlot(plotEl, title, label) {
+        var wrap = plotEl ? plotEl.closest('.lazy-plot-wrap') : null;
+        var panel = wrap ? wrap.querySelector('.plot-controls') : null;
+        if (!panel) return;
+        Array.prototype.forEach.call(panel.querySelectorAll('.plot-control-group'), function(gEl) {
+          var t = gEl.querySelector('.plot-control-title');
+          if (!t || t.textContent !== title) return;
+          Array.prototype.forEach.call(gEl.querySelectorAll('.plot-control-btn'), function(b) {
+            if (b.textContent === label) b.classList.add('active'); else b.classList.remove('active');
+          });
+        });
+      }
+      // Effective label for a control on a plot of a given kind. Choices live in
+      // per-kind buckets; the general scope writes the SAME value into every kind
+      // that has the control (see __psSetChoice), so general and per-kind always
+      // agree instead of masking each other.
+      function __psEffective(kind, title) {
+        var byKind = __psMaster[kind];
+        return (byKind && byKind[title] !== undefined) ? byKind[title] : undefined;
+      }
+      function __psApplyEntryTitle(entry, title) {
+        var label = __psEffective(entry.kind, title);
+        if (label === undefined) return;
+        var groups = entry.groups || [];
+        for (var i = 0; i < groups.length; i++) {
+          if (String((groups[i] && groups[i].title) || '') !== title) continue;
+          var btn = __psFindButton(groups[i], label);
+          if (btn) { runPlotlyControlAction(entry.plotEl, btn); __psSyncPerPlot(entry.plotEl, title, label); }
+          return;
+        }
+      }
+      function __psApplyEntryAll(entry) {
+        (entry.groups || []).forEach(function(g) { __psApplyEntryTitle(entry, String((g && g.title) || '')); });
+      }
+      function __psRegisterPlot(plotEl, groups, kind) {
+        var entry = { plotEl: plotEl, groups: Array.isArray(groups) ? groups : [], kind: kind || 'Other' };
+        __psRegistry.push(entry);
+        __psApplyEntryAll(entry);
+      }
+      // Which plot kinds expose a control with a given title (read from the
+      // payloads, so it covers plots that have not lazily rendered yet). Used to
+      // fan the general scope out to every relevant kind and to annotate titles.
+      function __psTitleKinds() {
+        var map = {};
+        __psAllPayloads().forEach(function(p) {
+          var kind = p.kind || 'Other';
+          (Array.isArray(p.controls) ? p.controls : []).forEach(function(g) {
+            var t = String((g && g.title) || 'Control');
+            (map[t] || (map[t] = {}))[kind] = 1;
+          });
+        });
+        var out = {};
+        Object.keys(map).forEach(function(t) { out[t] = Object.keys(map[t]).sort(); });
+        return out;
+      }
+      function __psSetChoice(scope, title, label) {
+        if (scope === '*') {
+          // General = one shared value applied to EVERY plot kind that has this
+          // control, so it is never masked by a per-kind choice and the two
+          // views stay in sync.
+          (__psTitleKinds()[title] || []).forEach(function(k) {
+            (__psMaster[k] || (__psMaster[k] = {}))[title] = label;
+          });
+        } else {
+          (__psMaster[scope] || (__psMaster[scope] = {}))[title] = label;
+        }
+        __psSave();
+        __psRegistry.forEach(function(entry) { __psApplyEntryTitle(entry, title); });
+      }
+      // A button is active in the general scope only when every kind that has the
+      // control agrees on the label; in a per-kind scope when that kind holds it.
+      function __psIsActive(scope, title, label) {
+        if (scope === '*') {
+          var kinds = __psTitleKinds()[title] || [];
+          return kinds.length > 0 && kinds.every(function(k) {
+            return __psMaster[k] && __psMaster[k][title] === label;
+          });
+        }
+        return !!(__psMaster[scope] && __psMaster[scope][title] === label);
+      }
+      function __psAllPayloads() {
+        var out = [];
+        Array.prototype.forEach.call(document.querySelectorAll('.js-lazy-plot'), function(el) {
+          var p = (typeof getPayloadFromScript === 'function') ? getPayloadFromScript(el.dataset.payloadId) : null;
+          if (p) out.push(p);
+        });
+        return out;
+      }
+      // Every figure kind that carries at least one adjustable control becomes a
+      // scope in the panel (a per-kind choice overrides the general one).
+      function __psKinds() {
+        var seen = {}; var order = [];
+        __psAllPayloads().forEach(function(p) {
+          var groups = Array.isArray(p.controls) ? p.controls : [];
+          var k = p.kind || 'Other';
+          if (groups.length && !seen[k]) { seen[k] = 1; order.push(k); }
+        });
+        return order;
+      }
+      function __psCollectUnique(scope) {
+        var byTitle = {}; var order = [];
+        __psAllPayloads().forEach(function(p) {
+          var kind = p.kind || 'Other';
+          if (scope !== '*' && kind !== scope) return;
+          (Array.isArray(p.controls) ? p.controls : []).forEach(function(g) {
+            var title = String((g && g.title) || 'Control');
+            if (!byTitle[title]) { byTitle[title] = []; order.push(title); }
+            var seen = byTitle[title];
+            (Array.isArray(g.buttons) ? g.buttons : []).forEach(function(b) {
+              var lab = String((b && b.label) || '');
+              if (lab && seen.indexOf(lab) === -1) seen.push(lab);
+            });
+          });
+        });
+        return order.map(function(t) { return { title: t, labels: byTitle[t] }; });
+      }
+      function __psRenderControls() {
+        var cont = document.getElementById('ps-controls');
+        if (!cont) return;
+        cont.innerHTML = '';
+        var unique = __psCollectUnique(__psScope);
+        if (unique.length === 0) { cont.innerHTML = "<p class='ps-empty'>No adjustable options for this selection.</p>"; return; }
+        var titleKinds = (__psScope === '*') ? __psTitleKinds() : null;
+        unique.forEach(function(ctrl) {
+          var g = document.createElement('div'); g.className = 'ps-group';
+          var t = document.createElement('div'); t.className = 'ps-title'; t.textContent = ctrl.title; g.appendChild(t);
+          // In the general scope, name the plot type(s) each control belongs to
+          // (e.g. "3D cap display" is only in Topography 3D) so the merged list
+          // is understandable.
+          if (titleKinds) {
+            var kinds = titleKinds[ctrl.title] || [];
+            if (kinds.length) {
+              var h = document.createElement('div'); h.className = 'ps-hint';
+              h.textContent = (kinds.length === 1 ? 'Only in ' : 'In ') + kinds.join(', ');
+              g.appendChild(h);
+            }
+          }
+          var row = document.createElement('div'); row.className = 'ps-row';
+          ctrl.labels.forEach(function(label) {
+            var b = document.createElement('button'); b.type = 'button';
+            b.className = 'ps-btn' + (__psIsActive(__psScope, ctrl.title, label) ? ' active' : '');
+            b.textContent = label;
+            b.addEventListener('click', function() {
+              __psSetChoice(__psScope, ctrl.title, label);
+              Array.prototype.forEach.call(row.querySelectorAll('.ps-btn'), function(x) { x.classList.remove('active'); });
+              b.classList.add('active');
+            });
+            row.appendChild(b);
+          });
+          g.appendChild(row); cont.appendChild(g);
+        });
+      }
+      function __psBuildPanel() {
+        var body = document.getElementById('plot-settings-body');
+        if (!body) return;
+        body.innerHTML = '';
+        var wrap = document.createElement('div'); wrap.className = 'ps-scope-wrap';
+        var lbl = document.createElement('label'); lbl.className = 'ps-scope-label'; lbl.setAttribute('for', 'ps-scope');
+        lbl.textContent = 'Apply to';
+        var sel = document.createElement('select'); sel.className = 'ps-scope'; sel.id = 'ps-scope';
+        var optAll = document.createElement('option'); optAll.value = '*'; optAll.textContent = 'All plots (general)';
+        sel.appendChild(optAll);
+        __psKinds().forEach(function(k) {
+          var o = document.createElement('option'); o.value = k; o.textContent = k; sel.appendChild(o);
+        });
+        sel.value = __psScope;
+        sel.addEventListener('change', function() { __psScope = sel.value; __psRenderControls(); });
+        wrap.appendChild(lbl); wrap.appendChild(sel); body.appendChild(wrap);
+        var cont = document.createElement('div'); cont.id = 'ps-controls'; body.appendChild(cont);
+        __psRenderControls();
+      }
+      function __psToggle(open) {
+        var overlay = document.getElementById('plot-settings-overlay');
+        if (!overlay) return;
+        var show = (open === undefined) ? !overlay.classList.contains('open') : open;
+        if (show) __psBuildPanel();
+        overlay.classList.toggle('open', show);
+      }
+      (function() {
+        __psLoad();   // restore saved choices before plots register/render
+        var btn = document.getElementById('plot-settings-btn');
+        if (btn) btn.addEventListener('click', function() { __psToggle(); });
+        var close = document.getElementById('plot-settings-close');
+        if (close) close.addEventListener('click', function() { __psToggle(false); });
+        var overlay = document.getElementById('plot-settings-overlay');
+        if (overlay) overlay.addEventListener('click', function(e) { if (e.target === overlay) __psToggle(false); });
+      })();
+"""
+
+
 def _build_subject_report_html(
     *,
     subject: str,
@@ -2338,6 +2677,7 @@ def _build_subject_report_html(
       to {{ transform: rotate(360deg); }}
     }}
 {settings_css}
+{_PLOT_SETTINGS_CSS}
   </style>
 </head>
 <body>
@@ -2348,6 +2688,7 @@ def _build_subject_report_html(
       <p>Rendering visible figures...</p>
     </div>
   </div>
+  {_PLOT_SETTINGS_HTML}
   <main>
     <section>
       <h1>MEEGqc subject report</h1>
@@ -2416,7 +2757,7 @@ def _build_subject_report_html(
         }}
       }}
 
-      function renderExternalControls(plotEl, controls) {{
+      function renderExternalControls(plotEl, controls, kind) {{
         const wrap = plotEl ? plotEl.closest('.lazy-plot-wrap') : null;
         const panel = wrap ? wrap.querySelector('.plot-controls') : null;
         if (!panel) {{
@@ -2459,6 +2800,7 @@ def _build_subject_report_html(
           gEl.appendChild(row);
           panel.appendChild(gEl);
         }});
+        if (typeof __psRegisterPlot === 'function') {{ __psRegisterPlot(plotEl, groups, kind); }}
       }}
 
       function renderLazyInScope(scopeRoot) {{
@@ -2487,7 +2829,7 @@ def _build_subject_report_html(
               payload.config || {{ responsive: true, displaylogo: false }}
             );
             el.dataset.rendered = '1';
-            renderExternalControls(el, payload.controls || []);
+            renderExternalControls(el, payload.controls || [], payload.kind || 'Other');
             if (rendered && typeof rendered.then === 'function') {{
               promises.push(rendered.catch(() => undefined));
             }}
@@ -2497,7 +2839,7 @@ def _build_subject_report_html(
         }});
         return promises.length ? Promise.all(promises).then(() => undefined) : Promise.resolve();
       }}
-
+{_PLOT_SETTINGS_JS}
       function resizeVisiblePlots(scopeRoot) {{
         if (typeof Plotly === 'undefined') return;
         const scope = scopeRoot || document;

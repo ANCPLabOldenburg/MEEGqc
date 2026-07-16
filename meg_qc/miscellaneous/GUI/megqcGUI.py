@@ -623,6 +623,7 @@ class SettingsEditorDialog(QDialog):
 
     _ENUM_OPTIONS: Dict[Tuple[str, str], List[str]] = {
         ("Filtering", "method"): ["iir", "fir"],
+        ("Epoching", "epoching_strategy"): ["auto", "events", "fixed"],
         ("Epoching", "event_repeated"): ["merge", "drop", "error"],
         ("EEG", "reference_method"): ["average", "REST", "none"],
         ("EEG", "montage"): [
@@ -687,6 +688,12 @@ class SettingsEditorDialog(QDialog):
 
         self.comment_map = self._build_comment_map(self.defaults_path)
         self.widgets: Dict[Tuple[str, str], Tuple[QWidget, str]] = {}
+        # Track each row's label and each section's group box so the grey-out
+        # system can dim the whole row (label + field) and whole sections, and
+        # so disabled widgets visibly change colour (a plain setEnabled(False)
+        # under the app QSS was not obviously greying them).
+        self.labels: Dict[Tuple[str, str], QLabel] = {}
+        self.section_boxes: Dict[str, QGroupBox] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -703,6 +710,7 @@ class SettingsEditorDialog(QDialog):
             box = QGroupBox(section)
             box.setMinimumWidth(260)
             box.setMaximumWidth(360)
+            self.section_boxes[section] = box
             form = QFormLayout(box)
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
             for key, val in self._section_items(section):
@@ -713,14 +721,17 @@ class SettingsEditorDialog(QDialog):
                 if tip:
                     label.setToolTip(tip)
                     widget.setToolTip(tip)
+                self.labels[(section, key)] = label
                 form.addRow(label, widget)
             grid.addWidget(box, idx // 3, idx % 3)
 
         scroll.setWidget(container)
         root.addWidget(scroll)
 
-        # Wire apply_filtering toggle AFTER all widgets are built
+        # Wire the grey-out system AFTER all widgets are built.
         self._wire_apply_filtering_toggle()
+        self._wire_epoching_strategy_toggle()
+        self._wire_metric_section_toggles()
 
         btn_row = QHBoxLayout()
         self.btn_reset = QPushButton("Reset to defaults")
@@ -737,6 +748,20 @@ class SettingsEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+    def _set_row_enabled(self, section, key, enabled):
+        """Enable/disable one settings row: the field widget AND its label, so
+        the whole row dims (the label carries the parameter name)."""
+        if (section, key) in self.widgets:
+            self.widgets[(section, key)][0].setEnabled(enabled)
+        if (section, key) in self.labels:
+            self.labels[(section, key)].setEnabled(enabled)
+
+    def _set_rows_enabled(self, section, enabled, exclude_key=None):
+        """Enable/disable every row in a section except an optional controller."""
+        for (sec, key) in list(self.widgets.keys()):
+            if sec == section and key != exclude_key:
+                self._set_row_enabled(sec, key, enabled)
+
     def _wire_apply_filtering_toggle(self):
         """
         When 'apply_filtering' is unchecked, gray-out the filter frequency and
@@ -752,13 +777,82 @@ class SettingsEditorDialog(QDialog):
         def _set_enabled(state):
             enabled = bool(state)
             for k in filter_dependent_keys:
-                if ("Filtering", k) in self.widgets:
-                    w, _ = self.widgets[("Filtering", k)]
-                    w.setEnabled(enabled)
+                self._set_row_enabled("Filtering", k, enabled)
 
         chk_widget.stateChanged.connect(_set_enabled)
         # Apply initial state on dialog open
         _set_enabled(chk_widget.isChecked())
+
+    def _wire_epoching_strategy_toggle(self):
+        """
+        Grey-out the Epoching settings that have no effect under the chosen
+        epoching_strategy:
+          - 'fixed'  : the event-based fields are irrelevant (segmentation ignores events).
+          - 'events' : the fixed-length fields are irrelevant (no fixed fallback).
+          - 'auto'   : everything applies.
+        """
+        if ("Epoching", "epoching_strategy") not in self.widgets:
+            return
+        cmb_widget, _ = self.widgets[("Epoching", "epoching_strategy")]
+        event_keys = ["event_dur", "epoch_tmin", "epoch_tmax", "stim_channel",
+                      "preferred_stim_channels", "noisy_stim_channels", "event_repeated"]
+        fixed_keys = ["fixed_epoch_duration", "fixed_epoch_overlap"]
+
+        def _apply(keys, enabled):
+            for k in keys:
+                self._set_row_enabled("Epoching", k, enabled)
+
+        def _set_enabled(_text=None):
+            strategy = str(cmb_widget.currentText()).strip().lower()
+            _apply(event_keys, strategy != "fixed")
+            _apply(fixed_keys, strategy != "events")
+
+        cmb_widget.currentTextChanged.connect(_set_enabled)
+        _set_enabled()
+
+    # A metric's on/off switch (in [GENERAL], or compute_gqi in its own section)
+    # gates the parameters that only matter when that metric runs. Mapping:
+    # (controller section, controller key) -> config section whose fields it gates.
+    _METRIC_SECTION_GATES = {
+        ("GENERAL", "STD"): "STD",
+        ("GENERAL", "PSD"): "PSD",
+        ("GENERAL", "PTP_manual"): "PTP_manual",
+        ("GENERAL", "ECG"): "ECG",
+        ("GENERAL", "EOG"): "EOG",
+        ("GENERAL", "Head"): "Head_movement",
+        ("GENERAL", "Muscle"): "Muscle",
+        ("GlobalQualityIndex", "compute_gqi"): "GlobalQualityIndex",
+    }
+
+    def _wire_metric_section_toggles(self):
+        """
+        Grey-out a whole metric section when its on/off switch is unchecked.
+        The [GENERAL] STD/PSD/PTP_manual/ECG/EOG/Head/Muscle booleans gate their
+        matching [<metric>] section; compute_gqi gates the rest of its own
+        [GlobalQualityIndex] section (its own checkbox stays live so it can be
+        turned back on).
+        """
+        for (ctrl_section, ctrl_key), gated in self._METRIC_SECTION_GATES.items():
+            if (ctrl_section, ctrl_key) not in self.widgets:
+                continue
+            chk_widget, _ = self.widgets[(ctrl_section, ctrl_key)]
+            controls_own_section = (ctrl_section == gated)
+
+            def _make_setter(gated=gated, ctrl_key=ctrl_key, own=controls_own_section):
+                def _set_enabled(state):
+                    enabled = bool(state)
+                    if own:
+                        # Keep the switch itself live; dim the other rows.
+                        self._set_rows_enabled(gated, enabled, exclude_key=ctrl_key)
+                    elif gated in self.section_boxes:
+                        # Controller lives elsewhere: dim the whole section box
+                        # (title + every field) in one call.
+                        self.section_boxes[gated].setEnabled(enabled)
+                return _set_enabled
+
+            setter = _make_setter()
+            chk_widget.stateChanged.connect(setter)
+            setter(chk_widget.isChecked())
 
     def _ordered_sections(self) -> List[str]:
         sections = list(self.config.sections())
@@ -1331,6 +1425,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.statusBar().setVisible(False)
 
+        # Restore saved parallel (n_jobs / All cores) settings + wire persistence.
+        self._restore_parallel_options()
+
         saved_theme = str(self.settings_store.value("ui/theme", "Ocean"))
         if saved_theme not in self.themes:
             saved_theme = "Ocean"
@@ -1574,6 +1671,26 @@ class MainWindow(QMainWindow):
         pale.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
         pale.setColor(QPalette.ColorRole.PlaceholderText, QColor("#585c79"))
         themes["Palenight"] = pale
+
+        # Give every theme an explicit Disabled colour group. None of the
+        # palettes above define one, so Fusion derived disabled text from the
+        # (explicit white/black) enabled colour, which barely differed - greyed
+        # controls did not visibly change colour. Blend each text role 45%
+        # toward the window background so a disabled label / field / combo /
+        # checkbox renders in a clearly muted, theme-appropriate grey. Fusion
+        # applies the Disabled group uniformly, so every widget type dims the
+        # same amount (no per-widget QSS needed).
+        for pal in themes.values():
+            win = pal.color(QPalette.ColorRole.Window)
+            for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text,
+                         QPalette.ColorRole.ButtonText):
+                base = pal.color(role)
+                muted = QColor(
+                    round(base.red() * 0.45 + win.red() * 0.55),
+                    round(base.green() * 0.45 + win.green() * 0.55),
+                    round(base.blue() * 0.45 + win.blue() * 0.55),
+                )
+                pal.setColor(QPalette.ColorGroup.Disabled, role, muted)
 
         return themes
 
@@ -1872,22 +1989,29 @@ class MainWindow(QMainWindow):
         profile_lay = QGridLayout(profile_box)
 
         self.cmb_analysis_mode = QComboBox()
-        self.cmb_analysis_mode.addItems(["legacy", "new", "reuse", "latest"])
-        self.cmb_analysis_mode.setCurrentText("new")
+        # Human-readable label shown to the user, canonical value (currentData)
+        # passed to the engine. Top-level choice is non-profile vs a profile run.
+        self.cmb_analysis_mode.addItem("Non-profile (single run)", "non-profile")
+        self.cmb_analysis_mode.addItem("New profile", "new-profile")
+        self.cmb_analysis_mode.addItem("Reuse profile", "reuse-profile")
+        self.cmb_analysis_mode.addItem("Latest profile", "latest-profile")
+        self.cmb_analysis_mode.setCurrentIndex(self.cmb_analysis_mode.findData("new-profile"))
+        # Grey out the profile-only controls when non-profile is selected.
+        self.cmb_analysis_mode.currentIndexChanged.connect(self._update_profile_controls_enabled)
 
         self.edit_analysis_id = QLineEdit()
-        self.edit_analysis_id.setPlaceholderText("Optional profile ID (required for mode=reuse)")
+        self.edit_analysis_id.setPlaceholderText("Optional profile ID (required for Reuse profile)")
         self.btn_load_profiles = QPushButton("Load profiles...")
         self.btn_load_profiles.clicked.connect(self._load_available_profiles)
         self.btn_refresh_profiles = QPushButton("Refresh profiles")
         self.btn_refresh_profiles.clicked.connect(self._refresh_profiles_cache)
 
         self.cmb_existing_cfg_policy = QComboBox()
-        self.cmb_existing_cfg_policy.addItems(["provided", "latest_saved", "fail"])
+        self.cmb_existing_cfg_policy.addItems(["provided", "latest_saved", "stop"])
         self.cmb_existing_cfg_policy.setCurrentText("provided")
 
         self.cmb_processed_sub_policy = QComboBox()
-        self.cmb_processed_sub_policy.addItems(["skip", "rerun", "fail"])
+        self.cmb_processed_sub_policy.addItems(["skip", "rerun", "stop"])
         self.cmb_processed_sub_policy.setCurrentText("skip")
 
         profile_lay.addWidget(QLabel("Mode:"), 0, 0)
@@ -1902,6 +2026,7 @@ class MainWindow(QMainWindow):
         profile_lay.addWidget(self.cmb_processed_sub_policy, 1, 3)
         profile_lay.setColumnStretch(3, 1)
         inputs_layout.addWidget(profile_box)
+        self._update_profile_controls_enabled()
 
         dataset_btn_row = QWidget()
         dataset_btn_lay = QHBoxLayout(dataset_btn_row)
@@ -1946,8 +2071,11 @@ class MainWindow(QMainWindow):
 
         self.jobs = QSpinBox()
         self.jobs.setRange(-1, os.cpu_count() or 1)
-        self.jobs.setValue(-1)
+        # Safe default: 1 job. Using all cores (-1) is opt-in via the "All cores"
+        # checkbox, because -1 as a default can exhaust RAM on low-memory machines.
+        self.jobs.setValue(1)
         self.jobs.valueChanged.connect(lambda _: self._refresh_calc_jobs_table())
+        self.chk_all_cores = self._make_all_cores_checkbox(self.jobs)
         btn_info = QPushButton("Info")
         btn_info.setToolTip("Parallel jobs info")
 
@@ -1955,8 +2083,8 @@ class MainWindow(QMainWindow):
             info = """
             Number of parallel jobs to use during
             processing.
-            Default is 1. Use -1 to utilize all
-            available CPU cores.
+            Default is 1 (safe). Tick "All cores" (or
+            set -1) to use all available CPU cores.
 
             ⚠️ Recommendation based on system
             memory:
@@ -1976,8 +2104,13 @@ class MainWindow(QMainWindow):
         row_jobs = QWidget()
         jobs_lay = QHBoxLayout(row_jobs)
         jobs_lay.setContentsMargins(0, 0, 0, 0)
+        self.btn_reset_jobs = QPushButton("Reset defaults")
+        self.btn_reset_jobs.setToolTip("Reset calculation and plotting jobs to the safe default (1 core).")
+        self.btn_reset_jobs.clicked.connect(self._reset_parallel_defaults)
         jobs_lay.addWidget(self.jobs)
+        jobs_lay.addWidget(self.chk_all_cores)
         jobs_lay.addWidget(btn_info)
+        jobs_lay.addWidget(self.btn_reset_jobs)
         calc_form.addRow("Calculation n_jobs:", row_jobs)
 
         self.chk_calc_per_dataset_jobs = QCheckBox("Use per-dataset n_jobs override")
@@ -2062,8 +2195,15 @@ class MainWindow(QMainWindow):
 
         self.plot_jobs = QSpinBox()
         self.plot_jobs.setRange(-1, os.cpu_count() or 1)
-        self.plot_jobs.setValue(self.jobs.value())
-        plot_form.addRow("Plotting n_jobs:", self.plot_jobs)
+        self.plot_jobs.setValue(1)
+        self.chk_plot_all_cores = self._make_all_cores_checkbox(self.plot_jobs)
+        plot_jobs_row = QWidget()
+        plot_jobs_lay = QHBoxLayout(plot_jobs_row)
+        plot_jobs_lay.setContentsMargins(0, 0, 0, 0)
+        plot_jobs_lay.addWidget(self.plot_jobs)
+        plot_jobs_lay.addWidget(self.chk_plot_all_cores)
+        plot_jobs_lay.addStretch(1)
+        plot_form.addRow("Plotting n_jobs:", plot_jobs_row)
 
         self.plot_input_tsv = QLineEdit()
         self.plot_input_tsv.setPlaceholderText("Optional: desc-GlobalQualityIndexAttempt*_*.tsv")
@@ -2481,20 +2621,33 @@ class MainWindow(QMainWindow):
         self._refresh_dataset_settings_button_state()
 
     def _collect_analysis_profile_settings(self) -> Tuple[str, Optional[str], str, str]:
-        mode = self.cmb_analysis_mode.currentText().strip().lower()
+        # currentData() is the canonical mode value (non-profile / new-profile / ...).
+        mode = self.cmb_analysis_mode.currentData() or "non-profile"
         analysis_id = self.edit_analysis_id.text().strip() or None
         cfg_policy = self.cmb_existing_cfg_policy.currentText().strip().lower()
         sub_policy = self.cmb_processed_sub_policy.currentText().strip().lower()
         return mode, analysis_id, cfg_policy, sub_policy
+
+    def _set_analysis_mode(self, canonical: str) -> None:
+        """Select the analysis-mode combo entry by its canonical value."""
+        idx = self.cmb_analysis_mode.findData(canonical)
+        if idx >= 0:
+            self.cmb_analysis_mode.setCurrentIndex(idx)
+
+    def _update_profile_controls_enabled(self, *args) -> None:
+        """Grey out the profile-only controls when non-profile mode is selected."""
+        is_profile = (self.cmb_analysis_mode.currentData() or "non-profile") != "non-profile"
+        for w in (self.edit_analysis_id, self.btn_load_profiles, self.btn_refresh_profiles):
+            w.setEnabled(is_profile)
 
     @staticmethod
     def _generate_shared_analysis_id() -> str:
         return f"analysis_{time.strftime('%Y%m%d_%H%M%S')}"
 
     def _validate_analysis_selection(self, mode, analysis_id, cfg_policy=None, sub_policy=None) -> bool:
-        if mode == "reuse" and not analysis_id:
+        if mode == "reuse-profile" and not analysis_id:
             QMessageBox.warning(self, "Analysis profile",
-                "analysis_mode='reuse' requires a profile ID.\nSet a profile ID or use 'Load profiles...'.")
+                "analysis_mode='reuse-profile' requires a profile ID.\nSet a profile ID or use 'Load profiles...'.")
             return False
         return True
 
@@ -2525,7 +2678,7 @@ class MainWindow(QMainWindow):
         self._log(f"Profile scan completed ({summary}); common={len(common)}.")
         if len(datasets) > 1 and not common:
             QMessageBox.information(self, "Profiles",
-                "No common profile ID across all selected datasets.\nUse legacy mode or create/reuse a shared analysis_id.")
+                "No common profile ID across all selected datasets.\nUse non-profile mode or create/reuse a shared analysis_id.")
 
     def _load_available_profiles(self):
         datasets = self._collect_dataset_paths()
@@ -2546,23 +2699,23 @@ class MainWindow(QMainWindow):
         picked, ok = QInputDialog.getItem(self, "Select profile", label, options, 0, False)
         if ok and picked:
             self.edit_analysis_id.setText(str(picked))
-            self.cmb_analysis_mode.setCurrentText("reuse")
+            self._set_analysis_mode("reuse-profile")
             self._log(f"Selected profile: {picked}")
 
     def _validate_multi_dataset_profile_compatibility(self, mode, analysis_id, *, qa_multi_dataset, qc_multi_dataset, require_existing_profiles=True) -> bool:
         if not (qa_multi_dataset or qc_multi_dataset):
             return True
-        if mode == "legacy":
+        if mode == "non-profile":
             return True
-        if mode not in {"reuse", "new"}:
+        if mode not in {"reuse-profile", "new-profile"}:
             QMessageBox.warning(self, "Profile compatibility",
-                "Multisample plotting requires a shared profile strategy.\nUse mode='reuse'/'new' or legacy mode.")
+                "Multisample plotting requires a shared profile strategy.\nUse a Reuse/New profile, or non-profile mode.")
             return False
         if not analysis_id:
             QMessageBox.warning(self, "Profile compatibility",
-                "Multisample plotting requires a profile ID for mode='reuse'/'new'.")
+                "Multisample plotting requires a profile ID for a Reuse/New profile.")
             return False
-        if mode == "new" and not require_existing_profiles:
+        if mode == "new-profile" and not require_existing_profiles:
             return True
         profile_map, _common = self._discover_profiles_for_datasets()
         missing = [Path(ds).name for ds, vals in profile_map.items() if analysis_id not in set(vals)]
@@ -2572,8 +2725,87 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    def _make_all_cores_checkbox(self, spin: QSpinBox) -> QCheckBox:
+        """Return an "All cores" checkbox wired to a jobs spinbox.
+
+        Ticking it sets the spinbox to -1 (use every core) and disables it;
+        unticking restores the previous manual value. This keeps the safe
+        default (1 job) while giving a one-click way to use all cores, which
+        can exhaust RAM on low-memory machines if made the default.
+        """
+        chk = QCheckBox("All cores")
+        chk.setToolTip("Use every CPU core (sets n_jobs = -1). Fast, but needs "
+                       "plenty of RAM; leave off if unsure.")
+        prev = {"v": max(1, spin.value())}
+
+        def _toggle(checked: bool):
+            if checked:
+                prev["v"] = spin.value() if spin.value() >= 1 else 1
+                spin.setValue(-1)
+                spin.setEnabled(False)
+            else:
+                spin.setEnabled(True)
+                spin.setValue(prev["v"])
+
+        chk.toggled.connect(_toggle)
+        return chk
+
+    def _persist_parallel_options(self):
+        """Save the calculation/plotting parallel settings to QSettings so they
+        survive GUI restarts. Stores the effective spinbox value (-1 when All
+        cores) plus each All-cores flag."""
+        if getattr(self, "_loading_parallel", False):
+            return
+        s = self.settings_store
+        s.setValue("run/calc_jobs", int(self.jobs.value()))
+        s.setValue("run/calc_all_cores", bool(self.chk_all_cores.isChecked()))
+        s.setValue("run/plot_jobs", int(self.plot_jobs.value()))
+        s.setValue("run/plot_all_cores", bool(self.chk_plot_all_cores.isChecked()))
+
+    def _restore_parallel_options(self):
+        """Restore saved parallel settings, then wire change-persistence."""
+        self._loading_parallel = True
+        try:
+            s = self.settings_store
+            for spin, chk, jkey, akey in (
+                (self.jobs, self.chk_all_cores, "run/calc_jobs", "run/calc_all_cores"),
+                (self.plot_jobs, self.chk_plot_all_cores, "run/plot_jobs", "run/plot_all_cores"),
+            ):
+                all_cores = bool(s.value(akey, False, type=bool))
+                val = int(s.value(jkey, 1, type=int))
+                if all_cores:
+                    spin.setValue(1)          # base value under the checkbox
+                    chk.setChecked(True)      # -> sets spin to -1 and disables it
+                else:
+                    chk.setChecked(False)
+                    spin.setValue(val if val >= 1 else 1)
+        finally:
+            self._loading_parallel = False
+        # Persist on any later change.
+        self.jobs.valueChanged.connect(lambda _: self._persist_parallel_options())
+        self.chk_all_cores.toggled.connect(lambda _: self._persist_parallel_options())
+        self.plot_jobs.valueChanged.connect(lambda _: self._persist_parallel_options())
+        self.chk_plot_all_cores.toggled.connect(lambda _: self._persist_parallel_options())
+
+    def _reset_parallel_defaults(self):
+        """Restore the safe default: 1 core for calculation and plotting."""
+        self.chk_all_cores.setChecked(False)
+        self.jobs.setValue(1)
+        self.chk_plot_all_cores.setChecked(False)
+        self.plot_jobs.setValue(1)
+        self._refresh_calc_jobs_table()
+        self._persist_parallel_options()
+
     def _toggle_calc_jobs_table(self, checked: bool):
         self._refresh_calc_jobs_table()
+
+    def _calc_jobs_row_spin(self, row: int) -> Optional[QSpinBox]:
+        """The n_jobs QSpinBox for a per-dataset override row (the cell holds a
+        spinbox + an 'All cores' checkbox in a container)."""
+        cell = self.calc_jobs_table.cellWidget(row, 1)
+        if isinstance(cell, QSpinBox):
+            return cell
+        return cell.findChild(QSpinBox) if cell is not None else None
 
     def _refresh_calc_jobs_table(self):
         if not hasattr(self, "calc_jobs_table"):
@@ -2583,7 +2815,7 @@ class MainWindow(QMainWindow):
         current_subjects: Dict[str, str] = {}
         for row in range(self.calc_jobs_table.rowCount()):
             item = self.calc_jobs_table.item(row, 0)
-            spin = self.calc_jobs_table.cellWidget(row, 1)
+            spin = self._calc_jobs_row_spin(row)
             subs_widget = self.calc_jobs_table.cellWidget(row, 2)
             if item is not None and spin is not None:
                 current_values[item.text()] = int(spin.value())
@@ -2598,9 +2830,20 @@ class MainWindow(QMainWindow):
             self.calc_jobs_table.setItem(row, 0, ds_item)
             spin = QSpinBox()
             spin.setRange(-1, max_jobs)
-            spin.setValue(current_values.get(ds, self.jobs.value()))
-            spin.setEnabled(allow_njobs_override)
-            self.calc_jobs_table.setCellWidget(row, 1, spin)
+            restored = current_values.get(ds, self.jobs.value())
+            spin.setValue(restored if restored >= 1 else 1)
+            all_cores = self._make_all_cores_checkbox(spin)
+            if restored == -1:
+                all_cores.setChecked(True)  # reflect a saved all-cores override
+            spin.setEnabled(allow_njobs_override and not all_cores.isChecked())
+            all_cores.setEnabled(allow_njobs_override)
+            cell = QWidget()
+            cell_lay = QHBoxLayout(cell)
+            cell_lay.setContentsMargins(0, 0, 0, 0)
+            cell_lay.setSpacing(6)
+            cell_lay.addWidget(spin)
+            cell_lay.addWidget(all_cores)
+            self.calc_jobs_table.setCellWidget(row, 1, cell)
             subs_edit = QLineEdit()
             subs_edit.setPlaceholderText("all or comma-separated IDs")
             subs_edit.setText(current_subjects.get(ds, "all"))
@@ -2665,7 +2908,7 @@ class MainWindow(QMainWindow):
         overrides: Dict[str, int] = {}
         for row in range(self.calc_jobs_table.rowCount()):
             item = self.calc_jobs_table.item(row, 0)
-            spin = self.calc_jobs_table.cellWidget(row, 1)
+            spin = self._calc_jobs_row_spin(row)
             if item is None or spin is None:
                 continue
             overrides[item.text()] = int(spin.value())
@@ -2765,7 +3008,7 @@ class MainWindow(QMainWindow):
         def on_started():
             self._start_task_timer("calc")
             cfg_note = f"global={self.global_config_path or 'default'}"
-            self._log(f"Calculation started for {len(dataset_paths)} dataset(s) ({cfg_note}, analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"Calculation started for {len(dataset_paths)} dataset(s) ({cfg_note}, analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("calc")
@@ -2836,7 +3079,7 @@ class MainWindow(QMainWindow):
         analysis_mode, analysis_id, _cfg_policy, _sub_policy = self._collect_analysis_profile_settings()
         if not self._validate_analysis_selection(analysis_mode, analysis_id, cfg_policy=_cfg_policy, sub_policy=_sub_policy):
             return
-        if analysis_mode == "new" and not analysis_id:
+        if analysis_mode == "new-profile" and not analysis_id:
             QMessageBox.warning(self, "Plotting", "Mode 'new' requires a profile ID for plotting.\nUse mode 'reuse' with a profile ID, or 'latest'/'legacy'.")
             return
         if not self._validate_multi_dataset_profile_compatibility(analysis_mode, analysis_id, qa_multi_dataset=qa_multi_dataset, qc_multi_dataset=qc_multi_dataset):
@@ -2861,7 +3104,7 @@ class MainWindow(QMainWindow):
 
         def on_started():
             self._start_task_timer("plot")
-            self._log(f"Plotting started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"Plotting started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("plot")
@@ -2909,7 +3152,7 @@ class MainWindow(QMainWindow):
         analysis_mode, analysis_id, _cfg_policy, _sub_policy = self._collect_analysis_profile_settings()
         if not self._validate_analysis_selection(analysis_mode, analysis_id, cfg_policy=_cfg_policy, sub_policy=_sub_policy):
             return
-        if analysis_mode == "new" and not analysis_id:
+        if analysis_mode == "new-profile" and not analysis_id:
             QMessageBox.warning(self, "GQI", "Mode 'new' requires a profile ID for GQI recomputation.\nUse mode 'reuse' with a profile ID, or 'latest'/'legacy'.")
             return
         args = (
@@ -2921,7 +3164,7 @@ class MainWindow(QMainWindow):
 
         def on_started():
             self._start_task_timer("gqi")
-            self._log(f"GQI started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"GQI started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("gqi")
@@ -2979,7 +3222,7 @@ class MainWindow(QMainWindow):
         qc_dataset = self.chk_qc_dataset.isChecked()
         qc_multi_dataset = self.chk_qc_multi_dataset.isChecked()
         multi_dataset_requested = qa_multi_dataset or qc_multi_dataset
-        if analysis_mode == "new" and multi_dataset_requested and len(dataset_paths) > 1 and not analysis_id:
+        if analysis_mode == "new-profile" and multi_dataset_requested and len(dataset_paths) > 1 and not analysis_id:
             analysis_id = self._generate_shared_analysis_id()
             self.edit_analysis_id.setText(analysis_id)
             self._log(f"Run ALL assigned shared analysis_id for multi-dataset queue: {analysis_id}")
@@ -2999,7 +3242,7 @@ class MainWindow(QMainWindow):
 
         def on_started():
             self._start_task_timer("all")
-            self._log(f"Run ALL started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'legacy'}).")
+            self._log(f"Run ALL started for {len(dataset_paths)} dataset(s) (analysis={analysis_mode}:{analysis_id or 'non-profile'}).")
 
         def on_finished():
             elapsed = self._stop_task_timer("all")

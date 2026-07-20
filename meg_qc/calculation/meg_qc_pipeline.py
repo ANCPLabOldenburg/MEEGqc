@@ -112,7 +112,7 @@ except ImportError:
     HAS_NUMBA = False
 # PTP auto (MNE's annotate_amplitude) has been removed from the pipeline —
 # the manual PTP implementation is more reliable and better integrated.
-from meg_qc.calculation.metrics.ECG_EOG_meg_qc import ECG_meg_qc, EOG_meg_qc
+from meg_qc.calculation.metrics.ECG_EOG_meg_qc import (ECG_meg_qc, EOG_meg_qc, compute_megnet_outputs_for_file,)
 from meg_qc.calculation.metrics.Head_meg_qc import HEAD_movement_meg_qc
 from meg_qc.calculation.metrics.muscle_meg_qc import MUSCLE_meg_qc
 
@@ -1413,6 +1413,19 @@ def process_one_subject(
                   % (time.time() - start_time))
 
         # 4) ECG
+        megnet_outputs_for_file = None
+        if all_qc_params['default']['run_ECG'] is True or all_qc_params['default']['run_EOG'] is True:
+            try:
+                megnet_outputs_for_file = compute_megnet_outputs_for_file(
+                    data_path=raw_cropped,
+                    megnet_params=all_qc_params.get('MEGNET', {}),
+                    raw=raw_cropped if hasattr(raw_cropped, 'info') else None,
+                    derivatives_root=derivatives_root,
+                )
+            except Exception as _megnet_exc:
+                print(f'___MEGqc___: MEGnet pre-computation failed: {_megnet_exc}')
+                megnet_outputs_for_file = None
+
         if all_qc_params['default']['run_ECG'] is True:
             print('___MEGqc___: ', 'Starting ECG...')
             start_time = time.time()
@@ -1420,11 +1433,13 @@ def process_one_subject(
                 'ECG',
                 ECG_meg_qc,
                 all_qc_params['ECG'],
+                all_qc_params.get('MEGNET', {}),
                 internal_qc_params['ECG'],
                 raw_cropped,
                 channels,
                 chs_by_lobe,
                 m_or_g_chosen,
+                megnet_outputs=megnet_outputs_for_file,
                 n_outputs=4,
                 empty_outputs=[[], [], '⚠ ECG metric failed — see excluded_subjects_errors.json for details.', []],
             )
@@ -1446,11 +1461,13 @@ def process_one_subject(
                 'EOG',
                 EOG_meg_qc,
                 all_qc_params['EOG'],
+                all_qc_params.get('MEGNET', {}),
                 internal_qc_params['EOG'],
                 raw_cropped,
                 channels,
                 chs_by_lobe,
                 m_or_g_chosen,
+                megnet_outputs=megnet_outputs_for_file,
                 n_outputs=4,
                 empty_outputs=[[], [], '⚠ EOG metric failed — see excluded_subjects_errors.json for details.', []],
             )

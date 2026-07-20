@@ -198,6 +198,13 @@ def get_all_config_params(config_file_path: str):
         ecg_fixed_ch = [name.strip() for name in ecg_fixed_ch.split(',') if name.strip()]
         all_qc_params['ECG'] = dict({
             'drop_bad_ch': ecg_section.getboolean('drop_bad_ch'),
+            'megnet_fallback': ecg_section.getboolean('megnet_fallback', fallback=False),
+            'megnet_independent': ecg_section.getboolean(
+                'megnet_independent',
+                fallback=ecg_section.getboolean('megnet_indepent', fallback=False),
+            ),
+            'megnet_lowpass_apply': ecg_section.getboolean('megnet_lowpass_apply', fallback=True),
+            'megnet_lowpass_h_freq': ecg_section.getfloat('megnet_lowpass_h_freq', fallback=40.0),
             'n_breaks_bursts_allowed_per_10min': ecg_section.getint('n_breaks_bursts_allowed_per_10min'),
             'allowed_range_of_peaks_stds': ecg_section.getfloat('allowed_range_of_peaks_stds'),
             'norm_lvl': ecg_section.getfloat('norm_lvl'),
@@ -210,10 +217,17 @@ def get_all_config_params(config_file_path: str):
         eog_fixed_ch = eog_section.get('fixed_channel_names', '')
         eog_fixed_ch = [name.strip() for name in eog_fixed_ch.split(',') if name.strip()]
         all_qc_params['EOG'] = dict({
+            'megnet_fallback': eog_section.getboolean('megnet_fallback', fallback=False),
+            'megnet_independent': eog_section.getboolean(
+                'megnet_independent',
+                fallback=eog_section.getboolean('megnet_indepent', fallback=False),
+            ),
+            'megnet_lowpass_apply': eog_section.getboolean('megnet_lowpass_apply', fallback=True),
+            'megnet_lowpass_h_freq': eog_section.getfloat('megnet_lowpass_h_freq', fallback=20.0),
             'n_breaks_bursts_allowed_per_10min': eog_section.getint('n_breaks_bursts_allowed_per_10min'),
             'allowed_range_of_peaks_stds': eog_section.getfloat('allowed_range_of_peaks_stds'),
             'norm_lvl': eog_section.getfloat('norm_lvl'),
-            'gaussian_sigma': ecg_section.getint('gaussian_sigma'),
+            'gaussian_sigma': eog_section.getint('gaussian_sigma'),
             'thresh_lvl_peakfinder': eog_section.getfloat('thresh_lvl_peakfinder'),
             'fixed_channel_names': eog_fixed_ch})
 
@@ -242,6 +256,47 @@ def get_all_config_params(config_file_path: str):
             eeg_settings['reference_method'] = eeg_sec.get('reference_method', 'average').strip()
             eeg_settings['montage'] = eeg_sec.get('montage', 'auto').strip()
         all_qc_params['EEG_settings'] = eeg_settings
+
+        # ── MEGnet settings (optional section) ──────────────────────────
+        megnet_section = config['MEGNET'] if 'MEGNET' in config else None
+        all_qc_params['MEGNET'] = dict({
+            'megnet_optional_dependency': (
+                megnet_section.getboolean('megnet_optional_dependency', fallback=True)
+                if megnet_section else True
+            ),
+            'probability_threshold': (
+                megnet_section.getfloat('probability_threshold', fallback=9.0)
+                if megnet_section else 9.0
+            ),
+            'combine_components': (
+                megnet_section.getboolean('combine_components', fallback=False)
+                if megnet_section else False
+            ),
+            'max_components_per_class': (
+                megnet_section.getint('max_components_per_class', fallback=1)
+                if megnet_section else 1
+            ),
+            'save_full_ica_timeseries': (
+                megnet_section.getboolean('save_full_ica_timeseries', fallback=False)
+                if megnet_section else False
+            ),
+            'megnet_component_strategy': (
+                megnet_section.get('megnet_component_strategy', fallback='top1').strip()
+                if megnet_section else 'top1'
+            ),
+            'megnet_ecg_class': (
+                megnet_section.getint('megnet_ecg_class', fallback=2)
+                if megnet_section else 2
+            ),
+            'megnet_eog_primary_class': (
+                megnet_section.getint('megnet_eog_primary_class', fallback=1)
+                if megnet_section else 1
+            ),
+            'megnet_eog_secondary_class': (
+                megnet_section.getint('megnet_eog_secondary_class', fallback=3)
+                if megnet_section else 3
+            ),
+        })
 
         gqi_section = config['GlobalQualityIndex']
 

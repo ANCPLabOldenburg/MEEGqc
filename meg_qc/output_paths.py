@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 
 OUTPUT_LAYOUTS = ("bids", "literal")
@@ -20,6 +20,25 @@ def normalize_output_layout(output_layout: str) -> str:
             f"Invalid output_layout '{output_layout}'. Supported values: {supported}."
         )
     return layout
+
+
+def validate_literal_dataset_names(dataset_paths: Sequence[str], output_layout: str) -> None:
+    """Reject ambiguous literal destinations before a batch starts writing.
+
+    Multi-dataset literal output uses the input directory names. Require these
+    names to be unique ignoring case, so outputs also stay separate on
+    case-insensitive filesystems. The existing BIDS layout is unchanged.
+    """
+    if normalize_output_layout(output_layout) != "literal":
+        return
+    names = [
+        os.path.basename(os.path.normpath(path)).casefold() for path in dataset_paths
+    ]
+    if len(names) != len(set(names)):
+        raise ValueError(
+            "Literal output requires unique dataset directory names (ignoring case). "
+            "Rename the input directories or run each dataset with a separate output."
+        )
 
 
 def dataset_derivatives_output(

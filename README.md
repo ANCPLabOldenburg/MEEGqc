@@ -165,6 +165,9 @@ run-meegqc --inputdata /path/to/dataset \
 
 For multiple input datasets, literal layout adds one dataset-named folder to
 keep their outputs separate: `/path/to/output/<dataset>/MEEGqc/`.
+Input directory names must be unique, ignoring case. Ambiguous literal
+destinations are rejected before any output is written; rename the input
+directories or run them separately with different output folders.
 
 The Python API uses the same option:
 

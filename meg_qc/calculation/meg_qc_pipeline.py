@@ -126,6 +126,7 @@ from meg_qc.output_paths import (
     dataset_derivatives_output,
     derivative_write_context,
     normalize_output_layout,
+    validate_literal_dataset_names,
     resolve_output_roots,
 )
 
@@ -1921,6 +1922,7 @@ def make_derivative_meg_qc(
 
     ds_paths = check_ds_paths(ds_paths)
     output_layout = normalize_output_layout(output_layout)
+    validate_literal_dataset_names(ds_paths, output_layout)
     internal_qc_params = get_internal_config_params(internal_config_file_path)
 
     requested_sub_list = sub_list

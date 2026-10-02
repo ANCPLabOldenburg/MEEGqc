@@ -13,6 +13,7 @@ from meg_qc.output_paths import (
     derivative_scope,
     derivative_write_context,
     resolve_output_roots,
+    validate_literal_dataset_names,
 )
 
 
@@ -143,6 +144,46 @@ def test_literal_multi_dataset_outputs_are_separate(tmp_path):
 def test_literal_layout_requires_external_output(tmp_path):
     with pytest.raises(ValueError, match="requires derivatives_output"):
         resolve_output_roots(str(tmp_path / "dataset"), None, "literal")
+
+
+@pytest.mark.parametrize("command", ["run-meegqc", "run-meegqc-plotting", "globalqualityindex"])
+@pytest.mark.parametrize("names", [("shared", "shared"), ("shared", "SHARED")])
+def test_literal_rejects_colliding_dataset_names_before_writing(tmp_path, cli, names, command):
+    datasets = []
+    for parent, name in zip(("study-a", "study-b"), names):
+        folder = tmp_path / parent
+        folder.mkdir()
+        datasets.append(_make_dataset(folder / name))
+    output = tmp_path / "external"
+
+    result = cli([
+        command, "--inputdata", *map(str, datasets),
+        "--derivatives_output", str(output), "--output_layout", "literal",
+    ])
+    assert result.returncode != 0
+    assert "unique dataset directory names" in result.stdout + result.stderr
+    assert not output.exists()
+
+
+def test_literal_python_api_rejects_colliding_names_before_writing(tmp_path):
+    from meg_qc.calculation.meg_qc_pipeline import make_derivative_meg_qc
+
+    datasets = []
+    for parent in ("study-a", "study-b"):
+        folder = tmp_path / parent
+        folder.mkdir()
+        datasets.append(str(_make_dataset(folder / "shared")))
+    output = tmp_path / "external"
+    with pytest.raises(ValueError, match="unique dataset directory names"):
+        make_derivative_meg_qc(
+            "not-read.ini", "not-read-internal.ini", datasets,
+            derivatives_base=str(output), output_layout="literal",
+        )
+    assert not output.exists()
+
+
+def test_bids_layout_keeps_existing_duplicate_name_behavior():
+    validate_literal_dataset_names(["study-a/shared", "study-b/shared"], "bids")
 
 
 def test_unknown_output_layout_is_rejected(tmp_path):

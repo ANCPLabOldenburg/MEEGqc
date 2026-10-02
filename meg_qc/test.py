@@ -9,6 +9,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Union
 from meg_qc.output_paths import (
     dataset_derivatives_output,
     normalize_output_layout,
+    validate_literal_dataset_names,
 )
 
 
@@ -223,6 +224,7 @@ def run_calculation_dispatch(
     if not ds_list:
         raise ValueError("No dataset paths provided for calculation.")
     output_layout = normalize_output_layout(output_layout)
+    validate_literal_dataset_names(ds_list, output_layout)
     analysis_mode = str(analysis_mode or "non-profile").strip().lower()
     if analysis_mode == "non-profile":
         logger(
@@ -404,6 +406,7 @@ def run_plotting_dispatch(
 
     ds_list = _normalize_dataset_paths(dataset_paths)
     output_layout = normalize_output_layout(output_layout)
+    validate_literal_dataset_names(ds_list, output_layout)
     dataset_outputs = {
         ds: dataset_derivatives_output(
             derivatives_output,
@@ -1125,6 +1128,7 @@ def run_gqi_dispatch(
     if not ds_list:
         raise ValueError("No dataset paths provided for GQI.")
     output_layout = normalize_output_layout(output_layout)
+    validate_literal_dataset_names(ds_list, output_layout)
     dataset_outputs = {
         ds: dataset_derivatives_output(
             derivatives_output,

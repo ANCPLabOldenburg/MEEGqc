@@ -3978,15 +3978,9 @@ def make_dataset_qc_plots_multi_meg_qc(
             print(f"___MEGqc___:   {b.dataset_name} -> {b.tsv_path}")
 
     # ── Per-modality separate HTML reports ──────────────────────────────
-    # Per-modality reports go beside the first dataset's derivatives by default,
-    # but must follow output_report_path when the caller gave one - otherwise a
-    # run against read-only or shared derivatives still writes into them.
-    if output_report_path:
-        _orp = Path(output_report_path)
-        base_dir = _orp if (str(output_report_path).endswith(("/", os.sep)) or _orp.is_dir()) \
-            else _orp.parent
-    else:
-        base_dir = bundles[0].reports_dir
+    # Keep per-modality reports beside the explicitly requested combined report,
+    # or beside the first dataset's derivatives when no output was given.
+    base_dir = out_path.parent if out_path is not None else bundles[0].reports_dir
     # Generic filename (no dataset list — long names break some file systems)
     # plus the GQI attempt and a unique run id so repeated runs never collide
     # and names are identical across operating systems.

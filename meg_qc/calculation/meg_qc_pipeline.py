@@ -121,9 +121,15 @@ import os
 import json
 import pandas as pd
 from typing import Union, Optional, Dict, Tuple
-from contextlib import contextmanager
 
 from meg_qc.calculation.metrics.summary_report_GQI import generate_gqi_summary
+from meg_qc.output_paths import (
+    dataset_derivatives_output,
+    derivative_write_context,
+    normalize_output_layout,
+    validate_literal_dataset_names,
+    resolve_output_roots,
+)
 from meg_qc.calculation.resource_budget import (
     effective_jobs, recording_size_bytes,
     DEFAULT_EXPANSION, DEFAULT_MEM_FRACTION, DEFAULT_MEM_RESERVE_GB,
@@ -165,56 +171,6 @@ def _timestamp_analysis_id() -> str:
     return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def resolve_output_roots(dataset_path: str, external_derivatives_root: Optional[str]) -> Tuple[str, str]:
-    """Return the dataset output root and derivatives folder respecting overrides.
-
-    Parameters
-    ----------
-    dataset_path : str
-        Path to the original BIDS dataset.
-    external_derivatives_root : Optional[str]
-        User-provided folder in which a dataset-named directory will be created
-        to host derivatives. If ``None`` the derivatives live inside the
-        original dataset.
-
-    Returns
-    -------
-    tuple
-        ``(output_root, derivatives_root)`` where ``output_root`` is the base
-        dataset directory used when writing derivatives and ``derivatives_root``
-        points to the "derivatives" folder inside ``output_root``.
-    """
-
-    ds_name = os.path.basename(os.path.normpath(dataset_path))
-    output_root = dataset_path if external_derivatives_root is None else os.path.join(external_derivatives_root, ds_name)
-    derivatives_root = os.path.join(output_root, 'derivatives')
-    os.makedirs(derivatives_root, exist_ok=True)
-
-    # When output is external, seed output_root with a dataset_description.json.
-    # The plotting module loads ANCPBIDS directly from output_root (no symlink
-    # overlay) so this file must be present for schema-version detection.
-    if external_derivatives_root is not None:
-        desc_dst = os.path.join(output_root, "dataset_description.json")
-        if not os.path.exists(desc_dst):
-            desc_src = os.path.join(dataset_path, "dataset_description.json")
-            if os.path.exists(desc_src):
-                try:
-                    import shutil as _shutil
-                    _shutil.copy2(desc_src, desc_dst)
-                except OSError:
-                    pass
-            if not os.path.exists(desc_dst):
-                import json as _json
-                stub = {"Name": os.path.basename(output_root), "BIDSVersion": "1.8.0"}
-                try:
-                    with open(desc_dst, 'w', encoding='utf-8') as _fh:
-                        _json.dump(stub, _fh, indent=2)
-                except OSError:
-                    pass  # Non-fatal; ancpbids falls back gracefully.
-
-    return output_root, derivatives_root
-
-
 def _scan_profile_dir(profiles_root: str) -> List[Tuple[str, float]]:
     """Scan one profiles directory and return ``(name, mtime)`` pairs sorted by mtime desc.
 
@@ -238,6 +194,7 @@ def _scan_profile_dir(profiles_root: str) -> List[Tuple[str, float]]:
 def list_analysis_profiles(
     dataset_path: str,
     external_derivatives_root: Optional[str] = None,
+    output_layout: str = "bids",
 ) -> List[str]:
     """List available MEGqc profile IDs for one dataset.
 
@@ -255,7 +212,11 @@ def list_analysis_profiles(
     output path.  Without this dual search the GUI "Load profiles" dialog shows
     nothing and ``resolve_analysis_root`` raises ``FileNotFoundError``.
     """
-    _, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
+    _, derivatives_root = resolve_output_roots(
+        dataset_path,
+        external_derivatives_root,
+        output_layout=output_layout,
+    )
     primary_profiles_root = os.path.join(derivatives_root, "MEEGqc", "profiles")
     candidates = _scan_profile_dir(primary_profiles_root)
 
@@ -289,6 +250,7 @@ LEGACY_DERIVATIVES_HINT = (
 def has_only_legacy_derivatives(
     dataset_path: str,
     external_derivatives_root: Optional[str] = None,
+    output_layout: str = "bids",
 ) -> bool:
     """Return True if old-style ('Meg_QC') derivatives exist but no new ('MEEGqc') ones.
 
@@ -296,7 +258,11 @@ def has_only_legacy_derivatives(
     build reports from derivatives produced by a pre-BIDS-rename MEEGqc version.
     """
     try:
-        _output_root, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
+        _output_root, derivatives_root = resolve_output_roots(
+            dataset_path,
+            external_derivatives_root,
+            output_layout=output_layout,
+        )
     except Exception:
         return False
     bases = [derivatives_root]
@@ -314,6 +280,7 @@ def resolve_analysis_root(
     analysis_mode: str = "non-profile",
     analysis_id: Optional[str] = None,
     create_if_missing: bool = False,
+    output_layout: str = "bids",
 ) -> Tuple[str, str, str, Optional[str], List[str]]:
     """Resolve output roots plus profile-specific MEGqc folder.
 
@@ -331,7 +298,11 @@ def resolve_analysis_root(
             f"{', '.join(sorted(_ANALYSIS_MODES))}."
         )
 
-    output_root, derivatives_root = resolve_output_roots(dataset_path, external_derivatives_root)
+    output_root, derivatives_root = resolve_output_roots(
+        dataset_path,
+        external_derivatives_root,
+        output_layout=output_layout,
+    )
     non_profile_root = os.path.join(derivatives_root, "MEEGqc")
     if mode == "non-profile":
         if create_if_missing:
@@ -343,7 +314,11 @@ def resolve_analysis_root(
         os.makedirs(profiles_root, exist_ok=True)
 
     resolved_id = analysis_id.strip() if isinstance(analysis_id, str) and analysis_id.strip() else None
-    available = list_analysis_profiles(dataset_path, external_derivatives_root)
+    available = list_analysis_profiles(
+        dataset_path,
+        external_derivatives_root,
+        output_layout=output_layout,
+    )
 
     if mode == "new-profile":
         resolved_id = resolved_id or _timestamp_analysis_id()
@@ -415,22 +390,6 @@ def _resolve_config_by_policy(
             "Choose existing_config_policy='provided' or 'latest_saved'."
         )
     return default_config_file_path
-
-
-@contextmanager
-def temporary_dataset_base(dataset, base_dir: str):
-    """Temporarily point an ANCPBIDS dataset to a different base directory.
-
-    This is used to redirect derivative writing without interfering with how
-    raw files are located inside the original BIDS dataset.
-    """
-
-    original_base = getattr(dataset, 'base_dir_', None)
-    dataset.base_dir_ = base_dir
-    try:
-        yield
-    finally:
-        dataset.base_dir_ = original_base
 
 
 def _ensure_derivative_dataset_description_filename(derivative) -> None:
@@ -1699,7 +1658,7 @@ def _compute_one_recording(file_ind, data_file, *, all_qc_params,
 
 
 def _register_and_write(_res, *, dataset, sub, entities_per_file,
-                        analysis_segments, output_root):
+                        analysis_segments, output_root, output_layout="bids"):
     """Register one recording's artifacts and write them immediately.
 
     Each recording gets its own derivative object rather than sharing the
@@ -1816,7 +1775,7 @@ def _register_and_write(_res, *, dataset, sub, entities_per_file,
                     meg_artifact.content = 'dummy text'
                     meg_artifact.extension = '.txt'
 
-        with temporary_dataset_base(dataset, output_root):
+        with derivative_write_context(dataset, derivative, output_root, output_layout):
             ancpbids.write_derivative(dataset, derivative)
     finally:
         _release_derivative(dataset, derivative)
@@ -1833,6 +1792,7 @@ def process_one_recording(
         derivatives_root: str,
         output_root: str,
         analysis_segments: Optional[List[str]] = None,
+        output_layout: str = "bids",
 ):
     """Compute one recording and write its derivatives. One unit of work.
 
@@ -1885,7 +1845,8 @@ def process_one_recording(
         n_artifacts = _register_and_write(
             res, dataset=_worker_dataset(dataset_path), sub=sub,
             entities_per_file=entities_per_file,
-            analysis_segments=analysis_segments, output_root=output_root)
+            analysis_segments=analysis_segments, output_root=output_root,
+            output_layout=output_layout)
     except Exception as exc:
         import traceback as _tb
         errors.append({
@@ -2075,6 +2036,7 @@ def make_derivative_meg_qc(
         mem_fraction: float = DEFAULT_MEM_FRACTION,
         mem_reserve_gb: float = DEFAULT_MEM_RESERVE_GB,
         assume_expansion: float = DEFAULT_EXPANSION,
+        output_layout: str = "bids",
 ):
     """Run MEGqc calculation for one or more datasets.
 
@@ -2095,15 +2057,28 @@ def make_derivative_meg_qc(
     keep_temp_on_error
         If ``True``, temporary preprocessed FIF files are kept when an exception
         occurs while processing a dataset to aid debugging.
+    output_layout
+        ``"bids"`` keeps the existing external layout
+        ``<output>/<dataset>/derivatives/MEEGqc``. ``"literal"`` writes to
+        ``<output>/MEEGqc`` and requires ``derivatives_base``.
     """
     start_time = time.time()
 
     ds_paths = check_ds_paths(ds_paths)
+    output_layout = normalize_output_layout(output_layout)
+    validate_literal_dataset_names(ds_paths, output_layout)
     internal_qc_params = get_internal_config_params(internal_config_file_path)
 
     requested_sub_list = sub_list
+    multiple_datasets = len(ds_paths) > 1
 
     for dataset_path in ds_paths:
+        dataset_derivatives_base = dataset_derivatives_output(
+            derivatives_base,
+            dataset_path,
+            output_layout,
+            multiple_datasets=multiple_datasets,
+        )
         print('___MEGqc___: ', 'DS path:', dataset_path)
         dataset = ancpbids.load_dataset(dataset_path, DatasetOptions(lazy_loading=True))
         (
@@ -2114,7 +2089,8 @@ def make_derivative_meg_qc(
             analysis_segments,
         ) = resolve_analysis_root(
             dataset_path=dataset_path,
-            external_derivatives_root=derivatives_base,
+            external_derivatives_root=dataset_derivatives_base,
+            output_layout=output_layout,
             analysis_mode=analysis_mode,
             analysis_id=analysis_id,
             create_if_missing=True,
@@ -2228,6 +2204,7 @@ def make_derivative_meg_qc(
                         derivatives_root=megqc_root,
                         output_root=output_root,
                         analysis_segments=analysis_segments,
+                        output_layout=output_layout,
                     )
                     for _s, _i, _f in _work
                 )
@@ -2299,7 +2276,9 @@ def make_derivative_meg_qc(
 
             # Write the pipeline-level derivative to disk
             try:
-                with temporary_dataset_base(dataset, output_root):
+                with derivative_write_context(
+                    dataset, derivative, output_root, output_layout
+                ):
                     ancpbids.write_derivative(dataset, derivative)
             finally:
                 _release_derivative(dataset, derivative)

@@ -39,6 +39,10 @@ from meg_qc.plotting.meg_qc_plots import (
 
 import meg_qc
 from meg_qc.calculation.meg_qc_pipeline import resolve_analysis_root
+from meg_qc.output_paths import (
+    dataset_derivatives_output,
+    validate_literal_dataset_names,
+)
 
 
 METRIC_ORDER = ("GQI", "STD", "PtP", "PSD", "ECG", "EOG", "Muscle")
@@ -285,6 +289,7 @@ def _resolve_input_paths(
     derivatives_base: Optional[str],
     input_tsv: Optional[str],
     attempt: Optional[int],
+    output_layout: str = "bids",
     analysis_mode: str = "legacy",
     analysis_id: Optional[str] = None,
 ) -> Tuple[str, str, Path, Optional[Path], Optional[int], Path]:
@@ -298,6 +303,7 @@ def _resolve_input_paths(
     ) = resolve_analysis_root(
         dataset_path=dataset_path,
         external_derivatives_root=derivatives_base,
+        output_layout=output_layout,
         analysis_mode=analysis_mode,
         analysis_id=analysis_id,
         create_if_missing=True,
@@ -462,6 +468,7 @@ def _load_one_dataset_bundle(
     derivatives_base: Optional[str],
     input_tsv: Optional[str],
     attempt: Optional[int],
+    output_layout: str = "bids",
     analysis_mode: str = "legacy",
     analysis_id: Optional[str] = None,
 ) -> QCDatasetBundle:
@@ -477,6 +484,7 @@ def _load_one_dataset_bundle(
         derivatives_base=derivatives_base,
         input_tsv=input_tsv,
         attempt=attempt,
+        output_layout=output_layout,
         analysis_mode=analysis_mode,
         analysis_id=analysis_id,
     )
@@ -3769,6 +3777,7 @@ def make_dataset_qc_plots_meg_qc(
     derivatives_base: Optional[str] = None,
     analysis_mode: str = "legacy",
     analysis_id: Optional[str] = None,
+    output_layout: str = "bids",
 ) -> Optional[Path]:
     """Build one dataset-level QC HTML report from GQI summary TSV.
 
@@ -3788,6 +3797,9 @@ def make_dataset_qc_plots_meg_qc(
         Analysis root selection mode (``legacy``, ``new``, ``reuse``, ``latest``).
     analysis_id
         Profile ID used with ``analysis_mode='reuse'``.
+    output_layout
+        ``"bids"`` preserves the existing external tree. ``"literal"`` uses
+        ``derivatives_base`` as the folder containing ``MEEGqc``.
 
     Returns
     -------
@@ -3800,6 +3812,7 @@ def make_dataset_qc_plots_meg_qc(
             derivatives_base=derivatives_base,
             input_tsv=input_tsv,
             attempt=attempt,
+            output_layout=output_layout,
             analysis_mode=analysis_mode,
             analysis_id=analysis_id,
         )
@@ -3902,21 +3915,31 @@ def make_dataset_qc_plots_multi_meg_qc(
     derivatives_base: Optional[str] = None,
     analysis_mode: str = "legacy",
     analysis_id: Optional[str] = None,
+    output_layout: str = "bids",
 ) -> Optional[Path]:
     """Build one multi-dataset QC HTML report from multiple GQI summary TSVs."""
     if not dataset_paths:
         print("___MEGqc___: QC multi report: no datasets provided.")
         return None
 
+    validate_literal_dataset_names(dataset_paths, output_layout)
+
     bundles: List[QCDatasetBundle] = []
     skipped: List[str] = []
     for ds in dataset_paths:
+        dataset_base = dataset_derivatives_output(
+            derivatives_base,
+            ds,
+            output_layout,
+            multiple_datasets=len(dataset_paths) > 1,
+        )
         try:
             bundle = _load_one_dataset_bundle(
                 dataset_path=ds,
-                derivatives_base=derivatives_base,
+                derivatives_base=dataset_base,
                 input_tsv=None,
                 attempt=attempt,
+                output_layout=output_layout,
                 analysis_mode=analysis_mode,
                 analysis_id=analysis_id,
             )
@@ -3978,15 +4001,9 @@ def make_dataset_qc_plots_multi_meg_qc(
             print(f"___MEGqc___:   {b.dataset_name} -> {b.tsv_path}")
 
     # ── Per-modality separate HTML reports ──────────────────────────────
-    # Per-modality reports go beside the first dataset's derivatives by default,
-    # but must follow output_report_path when the caller gave one - otherwise a
-    # run against read-only or shared derivatives still writes into them.
-    if output_report_path:
-        _orp = Path(output_report_path)
-        base_dir = _orp if (str(output_report_path).endswith(("/", os.sep)) or _orp.is_dir()) \
-            else _orp.parent
-    else:
-        base_dir = bundles[0].reports_dir
+    # Keep per-modality reports beside the explicitly requested combined report,
+    # or beside the first dataset's derivatives when no output was given.
+    base_dir = out_path.parent if out_path is not None else bundles[0].reports_dir
     # Generic filename (no dataset list — long names break some file systems)
     # plus the GQI attempt and a unique run id so repeated runs never collide
     # and names are identical across operating systems.

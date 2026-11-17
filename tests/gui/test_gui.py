@@ -16,16 +16,25 @@ def qapp():
 
 
 @pytest.fixture(autouse=True)
-def _clean_run_settings(qapp):
-    """Isolate the persisted parallel (run/) settings so tests are deterministic
-    and never leave values in the real QSettings store."""
+def _isolated_gui_state(qapp, tmp_path, monkeypatch):
+    """Keep preferences, legacy migration and runtime copies in temporary files."""
     from PyQt6.QtCore import QSettings
-    s = QSettings("ANCP", "MEEGqc")
-    s.remove("run")
-    s.sync()
-    yield
-    s.remove("run")
-    s.sync()
+    from meg_qc.miscellaneous.GUI import megqcGUI
+
+    def settings(organization, application):
+        store = QSettings(
+            str(tmp_path / f"{organization}_{application}.ini"),
+            QSettings.Format.IniFormat,
+        )
+        store.setFallbacksEnabled(False)
+        return store
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(megqcGUI, "QSettings", settings)
+    monkeypatch.setattr(megqcGUI, "_runtime_config_dir", lambda: tmp_path)
 
 
 @pytest.fixture
@@ -36,8 +45,15 @@ def main_window(qapp):
     w.close()
 
 
-def test_window_constructs(main_window):
+def test_window_constructs(main_window, tmp_path):
+    from pathlib import Path
+
     assert main_window.isVisible() in (True, False)  # constructed without raising
+    assert Path(main_window.settings_store.fileName()).parent == tmp_path
+    runtime_path = main_window._runtime_global_settings_path()
+    assert runtime_path.parent == tmp_path
+    main_window._ensure_runtime_settings_copy(runtime_path)
+    assert runtime_path.is_file()
 
 
 def test_analysis_mode_options_are_canonical(main_window):

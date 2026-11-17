@@ -45,13 +45,10 @@ def main_window(qapp):
     w.close()
 
 
-def test_window_constructs(main_window):
-    assert main_window.isVisible() in (True, False)  # constructed without raising
-
-
-def test_preferences_and_runtime_use_temporary_storage(main_window, tmp_path):
+def test_window_constructs(main_window, tmp_path):
     from pathlib import Path
 
+    assert main_window.isVisible() in (True, False)  # constructed without raising
     assert Path(main_window.settings_store.fileName()).parent == tmp_path
     runtime_path = main_window._runtime_global_settings_path()
     assert runtime_path.parent == tmp_path
